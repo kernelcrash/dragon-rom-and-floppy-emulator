@@ -179,13 +179,13 @@ There is an ultra simple protocol used;
    computer. 
 
 __Summary__
-
+```
 0xff50 - command register
 0xff51 - spare
 0xff52/0xff53 - number of files returned in a directory listing. In little endian (so 0xff52 is the low byte)
 0xff54/0xff55 - address register into a directory buffer
 0xff56        - byte to read from the directory buffer OR byte to write to the directory buffer
-
+```
 
 Technical
 ---------
