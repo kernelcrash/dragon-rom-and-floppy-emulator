@@ -623,7 +623,7 @@ int __attribute__((optimize("O0")))  main(void) {
 				}
 				case (MAIN_THREAD_COMMAND_LOAD_DIRECTORY): {
 					main_thread_command_reg |= MAIN_COMMAND_IN_PROGRESS;
-					menu_ctrl_file_count = load_directory("dragon",(unsigned char *)(CCMRAM_BASE+0x4080));
+					menu_ctrl_file_count = load_directory("dragon",(unsigned char *)(CCMRAM_BASE+0x4100));
 					//unsigned char * p = (unsigned char *) (CCMRAM_BASE+0x4080);
 					//*p = 0x00;
 					main_thread_command_reg |= MAIN_COMMAND_LOAD_DIRECTORY_COMPLETE;
