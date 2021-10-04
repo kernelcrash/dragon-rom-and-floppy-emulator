@@ -55,7 +55,7 @@ REDRAW
 
 
 	LDB	#$00
-	LDX	#$0080
+	LDX	#$0100
 	LDA	SCRATCH_PAGE_NUMBER
 L9@	DECA
 	BEQ	L1@
@@ -107,9 +107,12 @@ L4@	LDA	,Y+
 	TSTA
 	BNE	L4@
 ; trigger  the stm32f4 to swap in the dragondos ROM and load the disk image, then cold start teh Dragon
+	ORCC	#$50		; disable ints
+	LDX	$FFFE
+	PSHS	X
+	
 	LDA	#$00
-	TFR	A,DP
-	STA	$71		; trigger a cold start
+	STA	$0071		; trigger a cold start
 	LDA	#$40
 	STA	MENU_CTRL_COMMAND
 	LDB	#$80
@@ -118,7 +121,7 @@ L10@	NOP
 	DECB
 	BNE	L10@
 ; reboot Dragon
-	JMP	($FFFE)
+	RTS	; we pushed the reset vector earlier
 NO_LETTER
 	CMPA	#'1'
 	BLT	NO_NUMBER

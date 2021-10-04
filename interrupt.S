@@ -694,6 +694,22 @@ fdc_data_read:
 #ifdef DEBUG_FDC_DATA_READ_START
 	vstr     reg_zero,[r11,ODR]		
 #endif
+	mov32	r0,#track_buffer
+	vmov	r3,reg_track_buffer_ptr
+	movs	r1,#0
+
+	vmov	r12,reg_fdc_read_length
+	cmp	r12,#0
+	ITE	NE
+	ldrbne	r1,[r0,r3]		// get byte from the track buffer
+	vmoveq	r1,reg_fdc_data		// or get the data register
+	vmov	reg_fdc_data,r1		// update the data register
+
+	lsls	r1,#8
+	vmov	r0,reg_moder_dataout
+        str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
+        str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
+
 	// reset DRQ
 	vmov	r12,reg_fdc_drq_all_off_mask
 	vmov	r3,reg_next_fdc_irq_drq
@@ -712,31 +728,13 @@ fdc_data_read:
 10$:
 	vmov	r12,reg_fdc_read_length
 	cmp	r12,#0
-	bne	1$
-// read length is zero so just return the data register. This is an EXTRA DATA READ
-	vmov	r1,reg_fdc_data
-	lsls	r1,#8
-	vmov	r0,reg_moder_dataout
-        str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
-        str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
-	b	2$
-
-// non zero read length
-1$:
-	mov32	r0,#track_buffer
-	vmov	r3,reg_track_buffer_ptr
-	movs	r1,#0
-	ldrb	r1,[r0,r3]		// get byte from the track buffer
-	vmov	reg_fdc_data,r1		// update the data register
+	beq	2$
 
 #ifdef DEBUG_FDC_DATA_READ
         vstr    reg_zero,[r11,ODR]
 #endif
-	lsls	r1,#8
-	vmov	r0,reg_moder_dataout
-        str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
-        str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
-
+	vmov	r3,reg_track_buffer_ptr
+	vmov	r12,reg_fdc_read_length
 	adds	r3,#1			// incr the track_buffer_ptr
 	subs	r12,#1			// decr the read length
 	vmov	reg_track_buffer_ptr,r3	// update the track_buffer_ptr
