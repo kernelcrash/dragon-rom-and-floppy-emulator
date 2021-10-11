@@ -742,9 +742,9 @@ fdc_data_read:
 	vmov	reg_fdc_read_length,r12
 	mov	r0,#0x0ff		// 256 byte sectors
 	tst	r12,r0		// see if bottom 8 bits are clear
-	//IT	EQ
+	IT	EQ
 // must have crossed a sector boundary. Everything seems to just read one sector at a time, so leaving off
-	//addseq	r3,#1		// incr the sector number
+	addseq	r3,#1		// incr the sector number
 	vmov	reg_fdc_sector,r3
 	cmp	r12,#0
 	bne	2$
@@ -1125,9 +1125,9 @@ fdc_data_write:
 	vmov	reg_fdc_write_length,r12
 	mov	r0,#0x0ff
 	tst	r12,r0		// see if bottom 8 bits are clear
-	//IT	EQ
+	IT	EQ
 // must have crossed a sector boundary
-	//addseq	r3,#1		// incr the sector number
+	addseq	r3,#1		// incr the sector number
 	vmov	reg_fdc_sector,r3
 	cmp	r12,#0
 	bne	2$
