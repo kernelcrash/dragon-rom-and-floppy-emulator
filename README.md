@@ -34,7 +34,7 @@ Using a STM32F407VET6 or STM32F407VGT6 board
    PC3         - R/_W (p18)
    PC4         - unused
 
-   PC5         - unused
+   PC5         - _RESET
 
    PC6         - CART (PIA1 CB1) (note: CART is connected to Q for a real cartridge)
    PC7         - _NMI
@@ -45,7 +45,7 @@ Looking at the cartridge socket
 ```
        1  +12V           2  +12V
        3  !HALT          4  !NMI - PC7
-       5  !RESET         6  E (main clock) - PC0
+       5  !RESET (PC5)   6  E (main clock) - PC0
        7  Q (leads E)    8  CART (PIA1 CB1) - PC6
        9  +5V           10  D0 - PD8
       11  D1  - PD9     12  D2 - PD10
@@ -158,8 +158,8 @@ There is an ultra simple protocol used;
  - the list of filenames in the dragon directory is accessed by a paging
    mechanism. 0xff54 and 0xff55 are an address register into the stm32f4's
    memory where the filenames are stored in 128 byte chunks. The first 
-   filename is at offset 0x0080, the 2nd at 0x0100 and so on. So the Dragon
-   just needs to write 0x0080 to the 0xff54/0xff55 address register, then
+   filename is at offset 0x0100, the 2nd at 0x0180 and so on. So the Dragon
+   just needs to write 0x0100 to the 0xff54/0xff55 address register, then
    start to read the bytes of the filename from 0xff56. There is a built in
    autoincrement function , so the Dragon can just continue to read from 0xff56
    until it gets a 0x00 byte to signify the end of the filename.
@@ -230,6 +230,8 @@ anything.
 
 I've tested it with Dragon Dos 1.0 and 1.2 as well as SuperDOS E6. They seem to work.
 
+The Dragon _RESET line is monitored when the stm32f4 board starts up , and waits 
+for the Dragon32 to come out of reset.
 
 Thanks
 ------
