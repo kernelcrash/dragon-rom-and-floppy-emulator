@@ -23,7 +23,8 @@
 #define GPIO_DRAGON_CTS		GPIO_Pin_1
 #define GPIO_DRAGON_P2		GPIO_Pin_2
 #define GPIO_DRAGON_RW		GPIO_Pin_3
-#define GPIO_DRAGON_RESET	GPIO_Pin_4	// currently not used 20210909
+	
+#define GPIO_DRAGON_RESET	GPIO_Pin_5	
 
 #define GPIO_DRAGON_CART	GPIO_Pin_6
 #define GPIO_DRAGON_NMI		GPIO_Pin_7
@@ -81,7 +82,8 @@
 #define         CTS_MASK           0x0002       // ie PC1
 #define         P2_MASK             0x0004       // ie PC2
 #define         RW_MASK               0x0008       // ie PC3
-#define         RESET_HIGH           0x0010       // ie PC4
+
+#define         RESET_HIGH           0x0020       // ie PC5
 
 #define         CART_HIGH           0x0040       // ie PC6
 #define         NMI_HIGH           0x0080       // ie PC7
@@ -204,4 +206,5 @@
 #define VDK_FLAGS			10
 #define VDK_COMPRESSION_FLAG_AND_NAME_LENGTH	11
 
+#define SIZEOF_ONE_DISK_TRACK           18*256
 

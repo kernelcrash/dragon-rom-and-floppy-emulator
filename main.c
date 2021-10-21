@@ -242,10 +242,11 @@ void config_PC0_int(void) {
    PC1(in)         - _CTS (p32) (the cartridge chip select)
    PC2(in)         - _P2 (p36)  (the $FF40-$FF5F chip select)
 
-   PC3(in)         - R/_W (p18)
-   PC4(in)         -  _RESET ???
-   PC5(out)        -  _NMI
+   PC3(in)         -  R/_W (p18)
+   PC4(in)         -  future
+   PC5(out)        -  _RESET
    PC6(out)        - CART (PIA1 CB1)
+   PC7(out)        - _NMI
 */
 void config_gpio_portc(void) {
 	GPIO_InitTypeDef  GPIO_InitStructure;
@@ -372,7 +373,10 @@ FRESULT __attribute__((optimize("O0")))  load_track(FIL *fil, uint32_t track_num
 		// load 2 sides regardless of whether the disk is single sided or not
 		res = f_read(fil, track, 2 * 18 * 256, &BytesRead);
 	} else {
-                blink_debug_led(1000);
+                // it is possible after a weird reset that it will try to seek to some random value. Just return a blank track then.
+                for (uint32_t i=0; i< SIZEOF_ONE_DISK_TRACK; i++) {
+                        track[i] = 0;
+                }
 	}
 
 	return res;
@@ -422,6 +426,7 @@ int __attribute__((optimize("O0")))  main(void) {
 	int first_time;
 	uint32_t	button_state;
 	int32_t	file_counter;
+	uint32_t reset_counter;
 
         char *disk_header_ptr = (char *) &disk_header;
 
@@ -448,6 +453,15 @@ int __attribute__((optimize("O0")))  main(void) {
 
 	config_backup_sram();
 
+
+	// Make sure _RESET is high and stable before enabling interrupts
+	reset_counter=0;
+	while (reset_counter < 20) {
+		reset_counter = (GPIOC->IDR & RESET_HIGH)? reset_counter+1 : 0;
+		delay_us(2);
+	}
+
+	
 
 
 	//copy_rom_to_ram((uint8_t*) &rom_base, (uint8_t*) &high_64k_base);
@@ -597,6 +611,7 @@ int __attribute__((optimize("O0")))  main(void) {
 					main_thread_command_reg |= MAIN_COMMAND_IN_PROGRESS;
 					// Check if there is any pending write
 					if (fdc_write_flush_count) {
+                                                fdc_write_flush_count=0;
 						if (fil.obj.id) {
 							f_close(&fil);
 							memset(&fil, 0, sizeof(FIL));
