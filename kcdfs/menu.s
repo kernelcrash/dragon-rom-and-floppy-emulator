@@ -4,6 +4,7 @@
 	PRAGMA 6809
 
 GETKEY				EQU	$8006
+TANDY_INDIRECT_GETKEY		EQU	$A000
 TXT_SCREEN			EQU	$0400
 
 MENU_CTRL_COMMAND		EQU	$FF50
@@ -19,6 +20,7 @@ SCRATCH_PAGE_NUMBER		EQU	$7801
 SCRATCH_PAGE_BASE_ADDRESS	EQU	$7802
 SCRATCH_PROGRAM_END		EQU	$7804
 SCRATCH_FILE_NAME		EQU	$7806
+SCRATCH_MODE			EQU	$7807
 
 SCRATCH_START			EQU	$7880
 
@@ -36,6 +38,13 @@ MAIN
 	LDA	#$1
 	STA	SCRATCH_PAGE_NUMBER
 
+	LBSR	GET_TANDY_DRAGON_MODE
+	LEAX	HEADING_LINE+2,PCR
+	CMPA	#$00
+	BNE	L1@
+	LDA	#'C'		// Change title to KCCFS for Coco mode
+	STA	,X
+L1@	
 	LBSR	TRIGGER_DIR_LIST
 	LBSR	GET_FILE_COUNT
 
@@ -70,8 +79,15 @@ L2@	LBSR	PRINT_MENU_LINE
 	CMPB	#ENTRIES_PER_PAGE
 	BNE	L2@
 
-KEYWAIT	JSR	GETKEY
-	TSTA
+KEYWAIT	LDA	SCRATCH_MODE
+	TSTA			// = 0 for Tandy mode, = 1 for Dragon
+	BEQ	TANDY_KEYBOARD_MODE
+; Must be Dragon
+	JSR	GETKEY
+	BRA	KEYWAIT2
+TANDY_KEYBOARD_MODE
+	JSR	[TANDY_INDIRECT_GETKEY]
+KEYWAIT2 TSTA
 	BEQ	KEYWAIT
 	STA	(TXT_SCREEN)
 
@@ -108,6 +124,7 @@ L4@	LDA	,Y+
 	BNE	L4@
 ; trigger  the stm32f4 to swap in the dragondos ROM and load the disk image, then cold start teh Dragon
 	ORCC	#$50		; disable ints
+	;LDX	[$FFFE]
 	LDX	$FFFE
 	PSHS	X
 	
@@ -115,13 +132,19 @@ L4@	LDA	,Y+
 	STA	$0071		; trigger a cold start
 	LDA	#$40
 	STA	MENU_CTRL_COMMAND
-	LDB	#$80
+	LDB	#$FF
 ; kill some time
 L10@	NOP
 	DECB
 	BNE	L10@
 ; reboot Dragon
-	RTS	; we pushed the reset vector earlier
+	LDA	SCRATCH_MODE
+	TSTA
+	BEQ	L11@
+; Dragon reboot. Pop the reset vector we pushed earlier
+	RTS
+; Tandy reboot (should be fine for coco1 and coco2)
+L11@	JMP	$A027
 NO_LETTER
 	CMPA	#'1'
 	BLT	NO_NUMBER
@@ -145,7 +168,7 @@ NO_NUMBER
 	LDB	#$06
 	BSR	PRINT_LINE
 
-L1@	JSR	GETKEY
+L1@	JSR	[TANDY_INDIRECT_GETKEY]
 	BEQ	L1@
 
 	LBRA	REDRAW
@@ -157,7 +180,7 @@ GET_FILE_COUNT
 	STA	SCRATCH_FILE_COUNT
 	RTS
 
-; B is the line relative to the list. ie. the first entry with A. gamesdisk.vdk will be 0 even though it appears on the 2nd or 3rd line
+
 ; X is the stm32f4 address register pointer . 0x0080 is the first entry, 0x0100 is the 2nd and so on.
 PRINT_MENU_LINE
 	PSHS	B,X
@@ -287,6 +310,17 @@ L1@
 	PULS	A,B,X,Y
 	RTS
 
+GET_TANDY_DRAGON_MODE
+	LDB	#$01		// 01 means Dragon mode
+	LDA	MENU_CTRL_COMMAND
+	ASLA
+; bit 6 is the tandy/dragon mode bit. 
+	ASLA	
+	BCS	L1@
+	LDB	#$00
+L1@	STB	SCRATCH_MODE
+	TFR	B,A		// return mode in A
+	RTS
 
 TRIGGER_DIR_LIST
 	LDA	#$80
@@ -320,7 +354,7 @@ L1@	LDA	,X+
 
 
 HEADING_LINE
-	FCC	/KCDFS 0.1               PAGE    /
+	FCC	/KCDFS 0.25              PAGE    /
 	FCB	$00
 
 HELP_LINE

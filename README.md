@@ -1,20 +1,27 @@
 dragon-rom-and-floppy-emulator
 ==============================
 
+Also now works on the Tandy Color Computer (tested on a Coco 2, but probably works on Coco 1 as well). 
+
 More info at  https://www.kernelcrash.com/blog/emulating-roms-and-floppy-disks-on-the-dragon-32/
+and https://www.kernelcrash.com/blog/tandy-color-computer-2
 
 Heavily based on msx-rom-and-floppy-emulator (https://www.kernelcrash.com/blog/emulating-roms-and-floppy-drives-in-msx/)
 
+Note the 'Wiring it' section below if you've built the earlier version. There are some changes.
+
 Overview
 --------
-
-- Emulates ROMs and floppy disks for the Dragon 32 (and possibly Dragon 64 and other similar machines)
-- Take a cheap STM32F407 board (US$10 or so 'before the chip shortage'). Wire it into the dragon cartridge slot..
-- Make a FAT32 partition on a micro SD card and put rom and vdk disk images on it.
+- Emulates ROMs and floppy disks for the Dragon 32 and Tandy Color Computer 2 (and possibly Dragon 64 and other similar machines)
+  Both the Dragon and Tandy machines are very very similar at a technical level, and there are only minor differences when it comes to
+  floppy interfacing.
+- Take a cheap STM32F407 board (US$10 or so 'before the chip shortage'). Wire it into the dragon/tandy cartridge slot..
+- Make a FAT32 partition on a micro SD card and put rom and dsk/vdk disk images on it.
 - Plug the micro SD into the STM32F4 board.
-- The STM32F4 board presents a rom image in real time to the Dragon computer such that it thinks a rom cartridge is attached.
+- The STM32F4 board presents a rom image in real time to the Dragon or Tandy computer such that it thinks a rom cartridge is attached.
 - It can also emulate a WD2797 floppy disk controller such that you can load disk images off the SD card. It will emulate
-  a Dragon DOS (or other DOS) ROM cart at the same time.
+  a Dragon DOS (or other DOS) ROM cart at the same timei (or RS-DOS for a Coco).
+
 
 Wiring it
 ---------
@@ -23,29 +30,37 @@ Using a STM32F407VET6 or STM32F407VGT6 board
 ```
    PA2         - wire a button between it and GND. No need for a pullup. This is 'NEXT'
    PA3         - wire a button between it and GND. No need for a pullup. This is 'PREV'
+   PA4         - wire to a two pin jumper. Wire the other pin to GND. No need for a pullup. When you 
+                 set the jumper to tie PA4 to GND it means the board is in Tandy Coco mode. When 
+                 you don't have a jumper in place to GND it means the board is in Dragon 32 mode.
 
    PE0 to PE15 - A0 to A15
    PD8 to PD15 - D0 to D7
 
-   PC0         - _E (p6)
+   PB6         - connects to PC4
+   PB7         - E (p6) (see further down. _E connects to both PC0 and PB7)
+
+   PC0         - E (p6)
    PC1         - _CTS (p32) (the cartridge chip select)
    PC2         - _P2 (p36)  (the $FF40-$FF5F chip select)
 
    PC3         - R/_W (p18)
-   PC4         - unused
+   PC4         - PB6
 
    PC5         - _RESET
 
    PC6         - CART (PIA1 CB1) (note: CART is connected to Q for a real cartridge)
    PC7         - _NMI
 
+   PC13        - _HALT (only required for Tandy mode)
+
    GND         - GND
 ```
 Looking at the cartridge socket
 ```
        1  +12V           2  +12V
-       3  !HALT          4  !NMI - PC7
-       5  !RESET (PC5)   6  E (main clock) - PC0
+       3  !HALT - PC13   4  !NMI - PC7
+       5  !RESET - PC5   6  E (main clock) - PC0 & PB7
        7  Q (leads E)    8  CART (PIA1 CB1) - PC6
        9  +5V           10  D0 - PD8
       11  D1  - PD9     12  D2 - PD10
@@ -64,7 +79,7 @@ Looking at the cartridge socket
       37  A13 - PE13    38  A14 - PE14
       39  A15 - PE15    40  !DSD (Device Select Disable)
 ```
-If you get a board with a microSD card slot, then this 'standard' wiring of the SD adapter
+If you get a board with a microSD card slot, then the 'standard' wiring of the SD adapter
 is fine.
 
 The  DEVEBOX stm32f407 board I used during development has an LED attached to PA1, so various errors will result in PA1 flashing.
@@ -73,45 +88,64 @@ Setting up the micro SD card and using it
 -----------------------------------------
 
 I tend to format a micro SD card with a smallish partition (less than 1GB) with 
-FAT32. Create a dragon directory in the root and add rom images and disk images 
-to that directory. The order in which you copy the files to this directory
-determines the order in which you can cycle through them (ie. its not 
-alphabetical). It only understands VDK disk files.
+FAT32. If the board is in Dragon mode then you need:
 
-You also need to copy a DOS ROM to the root of the SD card, and call it
-dragondos.rom.  I've used Dragon DOS 1.0, but you can use SuperDOS as well
+  - A directory called 'dragon' containing .rom and .vdk files
+  - a file called dragondos.rom in the root of the SD card. It will be 
+    Dragon DOS 1.0 or SuperDOS
 
-If you then plugged the stm32f4 board in as described, then the Dragon should
-boot and see a DOS rom. If you typed DIR you would get a listing of the first
-disk you copied to the dragon directory.
+If the board is in Tandy mode:
 
-If you press NEXT, then do a DIR again (or power off/on the Dragon) then you 
-should get a directory listing of the 2nd disk you copied to the dragon 
-directory and so on. PREV can be used to go to the previos disk image.
+  - A directory called 'tandy' containing .rom and .dsk files
+  - a file called tandydos.rom in the root of the SD card. It will be 
+    RS-DOS 1.1 or similar
+
+The order in which you copy files into the dragon or tandy dirctories is 
+the order they will appear when you are cycling through disks or roms (ie.
+its not alphabetical).
+
+If you then plugged the stm32f4 board in as described, then the Dragon or Coco
+will look at the first file in the dragon or tandy directory and 'present' it.
+If that file is a .rom file then the computer will see that as a cartridge at
+0xC000. If its a .vdk or .dsk file then the appropriate DOS rom is loaded as a
+cartridge at 0xC000 and you boot into BASIC. If you type DIR then you should see
+a directory listing of that first .vdk or .dsk file.
+
+Assuming you have presented a disk, if you press NEXT, then do a DIR again
+(or power off/on the Dragon) then you should get a directory listing of the 2nd
+disk you copied to the dragon directory and so on. PREV can be used to go to the
+previos disk image.
 
 It's not a bad idea to power the stm32f4 board seperately so you can power off/on
 the dragon when necessary without resetting the stm32f4 board to its first disk 
 image (ie. make sure GND is connected from the Dragon to the stm32f4 board, but
-leave +5V disconnected). You can put ROM images in the dragon directory as well. If you pressed
-NEXT or PREV to load a ROM image, your Dragon would probably crash because it
-would be like pulling out the DOS cartridge and swapping it quickly. ie. it's 
-best to power off/on the Dragon.
+leave +5V disconnected). Given that you can intermix .rom and disk image files 
+in the dragon or tandy directory you can end up swapping out the DOS rom to 
+replace with a different ROM. Chances are you would crash the computer at that
+point. ie. it's best to power off/on the Dragon/Coco.
 
 There is also a special ROM called menu.rom. If you have built it using lwtools
 (see the build.sh script), you can copy menu.rom to the root of the SD card as
-well. If you power off your Dragon, and reset the stm32f4 board, the Dragon
-should now boot to a menuing system called KCDFS that lists the disk images
-in a simple paged menu setup.  You can then select a disk image using a letter
-key. The Dragon will now cold reboot. If you selected a disk, you should have
-booted Dragon DOS or similar and a DIR will show you the contents of the disk
- you selected. If you selected a ROM
-it should boot directly into that ROM.
+well. If you power off your Dragon or Coco, and reset the stm32f4 board, the Dragon
+or Coco should now load the menu.rom at 0xC000 and show a disk/rom menuing system
+called KCDFS (or renamed to KCCFS if you set the jumper for Tandy mode.
+From the menu you can select a disk image or ROM and the Dragon or Coco will then boot
+into what you selected (ie. if you chose a rom it will boot that ROM. If you
+chose a disk, it will boot into BASIC with a DOS loaded and the disk image
+in the first drive)
 
-With the menu.rom, the NEXT and PREV keys still operate as they should. So if 
+With the KCDFS/KCCFS menu.rom, the NEXT and PREV keys still operate as they should. So if 
 say you had a disk image for a game. And the next disk was a blank disk you used
 for game saves, then you just press NEXT when the game asks to save, and press
 PREV to get back to the game disk. It only emulates one disk drive.
 
+Normally to get back to the menu.rom you need to power down the Dragon or Coco and
+also make sure the stm32f4 board is reset. However, there is a magic restart mode
+whereby if you hold in the reset button of the Dragon or Tandy and then press the 
+NEXT button, wait a second, then press the PREV button, then let go of the reset button
+it will hopefully go back to the menu.rom. This won't work 100% of the time due to 
+the way some games or software have been written. In that case you'll need to power
+down the Dragon or Coco.
 
 Copying the firmware to the stm32f407 board
 -------------------------------------------
@@ -122,17 +156,17 @@ work you would need to set the BOOT0 and or BOOT1 settings such that plugging
 the board in via usb will show a DFU device. Then you can run transfer.sh. Remove
 the BOOT0 or BOOT1 jumpers after you do this.
 
-KCDFS
------
+KCDFS/KCCFS
+-----------
 
-In the kcdfs directory is menu.s. It's a 6809 assembly program for the Dragon
-that can communicate to the stm32f4 board in order to show a list of all the 
+In the kcdfs directory is menu.s. It's a 6809 assembly program for the 
+Dragon or Coco that can communicate to the stm32f4 board in order to show a list of all the 
 files in the dragon directory of the SD card. You need lwtools to assemble it
 into menu.rom that you need to put in the root of the SD card.
 
-After reset of the stm32f4 board it should load menu.rom and present it to the
-Dragon. So if you want to 'get back to the kcdfs menu', you can power down the
-Dragon and hit reset on the stm32f4 board, then power on the Dragon. Sometimes
+After reset of the stm32f4 board it should load menu.rom and present it.
+So if you want to 'get back to the kcdfs menu', you can power down the
+Dragon or Coco and hit reset on the stm32f4 board, then power on the Dragon. Sometimes
 you can get away with just holding in the reset button of the Dragon, then tap
 reset on the stm32f4 board, then let go of the Dragon reset button.
 
@@ -146,8 +180,11 @@ some help.
 
 There is an ultra simple protocol used;
 
+ - kcdfs reads 0xff50. Bit 6 reflects the Tandy/Dragon jumper setting on 
+   the stm32f4 board. A 0 means Tandy mode. A 1 means Dragon mode.
+
  - kcdfs writes an 0x80 to 0xff50. That triggers the main thread of the 
-   smt32f4 board to do a directory listing of the dragon directory.
+   smt32f4 board to do a directory listing of the dragon or tandy directory.
    The stm32f4 board will write this directory listing into its own 
    memory in a series of 128 byte filename chunks.
 
@@ -163,7 +200,7 @@ There is an ultra simple protocol used;
    start to read the bytes of the filename from 0xff56. There is a built in
    autoincrement function , so the Dragon can just continue to read from 0xff56
    until it gets a 0x00 byte to signify the end of the filename.
-   The Dragon would then write a 0x0100 to the 0xff54/0xff55 address register
+   The Dragon would then write a 0x0180 to the 0xff54/0xff55 address register
    and would start to read the 2nd filename and so on. I will note too, that 
    unlike the 6809, the address register is little-endian. ie. the low byte
    goes to 0xff54, the high byte to 0xff55
@@ -179,21 +216,28 @@ There is an ultra simple protocol used;
    computer. 
 
 __Summary__
-```
+
 0xff50 - command register
 0xff51 - spare
 0xff52/0xff53 - number of files returned in a directory listing. In little endian (so 0xff52 is the low byte)
 0xff54/0xff55 - address register into a directory buffer
 0xff56        - byte to read from the directory buffer OR byte to write to the directory buffer
-```
 
-Technical
----------
 
-PC0 will interrupt on the +ve edge of E. In the Dragon 32 the E clock is high for a 
-little over 500ns. The stm32f4 will start its ISR routine maybe 100 to 150ns into
-the high part of the E clock. The 6809 address and data lines should be stable by 
-then. Then there is a bunch of decision stuff such as 
+Technical (for the Dragon)
+--------------------------
+
+When E goes low (-ve edge) it triggers TIM4 (PB7) to generate a one-pulse in 400
+or so nanoseconds. The one-pulse comes out of PB6. PB6 is connected to PC4 to
+generate an EXTI4 interrupt. What this all means is that the first line of the 
+EXTI4 interrupt handler is executed  just after the leading edge of E exactly
+when you would like it to start executing. If you use the +ve edge of E to 
+trigger the EXTI interrupt it will take 100ns or so before the first line is 
+executed so you always waste 100ns of the E high time( a bit of 500ns). On the 
+Dragon the loss of the 100ns does not really affect things, but this was done
+as an experiment to work out ways of bringing the interrupt handler forward.
+
+Once the interrupt handler is running.
 
  - Is it a ROM read?
  - Is it a P2 peripheral access?
@@ -230,8 +274,34 @@ anything.
 
 I've tested it with Dragon Dos 1.0 and 1.2 as well as SuperDOS E6. They seem to work.
 
-The Dragon _RESET line is monitored when the stm32f4 board starts up , and waits 
-for the Dragon32 to come out of reset.
+Note also that the _RESET signal of the Dragon is monitored. After the stm32f4 board
+resets it makes sure the _RESET on the Dragon is high for a while to indicate that it
+should be out of reset. The rationale is that before _RESET is stable at a high level
+there is potentially a lot of erratic activity that could stuff up the EXTI interrupt
+processing.
+
+Technical (for the Tandy Coco)
+------------------------------
+
+How it works is mostly the same as described in the Dragon Technical detail above.
+The main differences are:
+
+ - The Coco has the FDC chip at 0xFF48 to 0xFF4B
+ - The latch is at 0xFF40 and some bits are different to the Dragon
+ - The INTRQ pin on the FDC is again gated to connect to _NMI. It actually uses the 
+   DENSITY bit of the latch to do this. When DENSITY is high, _NMI can go low
+   when INTRQ goes high. For DRQ, it is gated by bit 7 of the latch such that
+   _HALT will go low only when DRQ is low and bit 7 of the latch are high.
+   That means that _HALT will go low at the end of a DRQ rather than the beginning.
+   There is additional logic that says when INTRQ goes low that bit 7 of the latch 
+   will be forced low. So when INTRQ ends, _HALT must end up going high.
+
+I have tested with RS-DOS 1.1 (disk11.rom).
+
+I found most Coco software is in DSK format which is just a raw dump of the 35 
+tracks of 18x256 sectors. ie. filesize of 161280 bytes. For me this just means there
+is no header anymore (which VDK files have).
+
 
 Thanks
 ------

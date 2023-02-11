@@ -71,7 +71,7 @@ FRESULT load_rom(char *fname, char* highbuffer) {
 }
 
 // This just lists the files in a directory one by one
-// Each filename is writtent to the buffer 128 bytes apart and are null ended
+// Each filename is written to the buffer 128 bytes apart and are null ended
 // return the number of files read
 uint32_t load_directory(char *dirname, unsigned char*buffer) {
 	FRESULT res;

@@ -16,18 +16,19 @@
 
 #define GPIO_NEXT_ITEM		GPIO_Pin_2
 #define GPIO_PREV_ITEM		GPIO_Pin_3
-#define GPIO_ROM_DISK_CONTROL	GPIO_Pin_4
+#define GPIO_DRAGON_TANDY_MODE_CONTROL	GPIO_Pin_4
 
 // GPIO Mapping Port C
 #define GPIO_DRAGON_E 		GPIO_Pin_0
 #define GPIO_DRAGON_CTS		GPIO_Pin_1
 #define GPIO_DRAGON_P2		GPIO_Pin_2
 #define GPIO_DRAGON_RW		GPIO_Pin_3
-	
+#define GPIO_ONE_PULSE		GPIO_Pin_4	
 #define GPIO_DRAGON_RESET	GPIO_Pin_5	
 
 #define GPIO_DRAGON_CART	GPIO_Pin_6
 #define GPIO_DRAGON_NMI		GPIO_Pin_7
+#define GPIO_TANDY_HALT		GPIO_Pin_13	// PC13
 
 
 
@@ -82,16 +83,19 @@
 #define         CTS_MASK           0x0002       // ie PC1
 #define         P2_MASK             0x0004       // ie PC2
 #define         RW_MASK               0x0008       // ie PC3
-
+#define         ONE_PULSE_HIGH       0x0010       // ie PC4
 #define         RESET_HIGH           0x0020       // ie PC5
 
 #define         CART_HIGH           0x0040       // ie PC6
 #define         NMI_HIGH           0x0080       // ie PC7
+#define         HALT_HIGH           0x2000       // ie PC13
 
 // =============================
 #define		NEXT_ROM_OR_DISK_MASK 0x0004	   // PA2
 #define		PREV_ROM_OR_DISK_MASK 0x0008	   // PA3
+#define		TANDY_DRAGON_MODE_MASK 0x0010	   // PA4
 // =============================
+#define		MAGIC_BUTTON_SUM	1025	// you get this if you push + then - , or - then +
 
 #define		E_PREEMPTION_PRIORITY	0
 #define		SDIO_IRQ_PREEMPTION_PRIORITY	3
@@ -134,15 +138,25 @@
 #define C_SETTRACK 0x10
 #define C_MULTIREC 0x10
 
-#define S_DRIVE    0x03	// drive select is bits 1 and 0. 00 means drive 0
-#define S_MOTOR    0x04 // has to be zero for motor to turn on.
-#define S_DENSITY  0x08 // connects straight to _DDEN
-#define S_PRECOMP  0x10 // set high to enable PRECOMP
-#define S_NMI      0x20 // set high to enable _NMI ints
+#define S_DRAGON_DRIVE    0x03	// drive select is bits 1 and 0. 00 means drive 0
+#define S_DRAGON_MOTOR    0x04 // has to be zero for motor to turn on.
+#define S_DRAGON_DENSITY  0x08 // connects straight to _DDEN
+#define S_DRAGON_PRECOMP  0x10 // set high to enable PRECOMP
+#define S_DRAGON_NMI      0x20 // set high to enable _NMI ints
+
+#define S_TANDY_DRIVE_1  0x01
+#define S_TANDY_DRIVE_2  0x02
+#define S_TANDY_DRIVE_3  0x04
+#define S_TANDY_MOTOR    0x08
+#define S_TANDY_PRECOMP  0x10
+#define S_TANDY_DENSITY  0x20
+#define S_TANDY_DRIVE_4  0x40
+#define S_TANDY_HALT     0x80
 
 #define S_LASTSTEPDIR	0x80
 #define S_SIDE          0x00000100
 #define S_FDC_PRESENT	0x80000000
+#define S_DRAGON_TANDY_MODE	0x40000000    // Dragon Mode = 1 (to match the state when the jumper is disconnected), Tandy Mode = 0 (to match 'pulled to GND')
 
 #define WD1793_IRQ     0x80
 #define WD1793_DRQ     0x40
@@ -170,7 +184,8 @@
 //
 // ---------------
 
-#define DSK_SUFFIX	".vdk"
+#define DSK_SUFFIX	".dsk"
+#define VDK_SUFFIX	".vdk"
 
 // ------------
 // VDK structure
