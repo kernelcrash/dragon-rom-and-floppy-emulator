@@ -4,7 +4,6 @@ dragon-rom-and-floppy-emulator
 Also now works on the Tandy Color Computer (tested on a Coco 2, but probably works on Coco 1 as well). 
 
 More info at  https://www.kernelcrash.com/blog/emulating-roms-and-floppy-disks-on-the-dragon-32/
-and https://www.kernelcrash.com/blog/tandy-color-computer-2
 
 Heavily based on msx-rom-and-floppy-emulator (https://www.kernelcrash.com/blog/emulating-roms-and-floppy-drives-in-msx/)
 
@@ -20,7 +19,7 @@ Overview
 - Plug the micro SD into the STM32F4 board.
 - The STM32F4 board presents a rom image in real time to the Dragon or Tandy computer such that it thinks a rom cartridge is attached.
 - It can also emulate a WD2797 floppy disk controller such that you can load disk images off the SD card. It will emulate
-  a Dragon DOS (or other DOS) ROM cart at the same timei (or RS-DOS for a Coco).
+  a Dragon DOS (or other DOS) ROM cart at the same time.
 
 
 Wiring it
@@ -302,6 +301,36 @@ I found most Coco software is in DSK format which is just a raw dump of the 35
 tracks of 18x256 sectors. ie. filesize of 161280 bytes. For me this just means there
 is no header anymore (which VDK files have).
 
+
+About OS-9 and Nitros-9
+--------------------------------------------
+OS-9 iand Nitros-9 for a Coco 2 with 64K should just work fine. Basically insert the disk, 
+type DOS and you should see 'OS9 BOOT' or 'NITROS9 BOOT' and eventually the main OS-9 screen
+and a prompt.
+
+So OS-9 on Dragon does work. However OS-9 was designed for the Dragon 64
+in the Dragon world. My Dragon 32 has had the 64K mod done to it and OS-9 does sort
+of work on it. Per this page http://archive.worldofdragon.org/index.php?title=Dragon_32_-_64K_Upgrade
+The OS-9 boot will hang due to the 6551 ACIA missing in a Dragon 32. So the 
+basic deal for a modded Dragon 32 is
+
+ - Insert the OS-9 disk for Dragon 64
+ - Type BOOT
+ - You should see 'OS9 BOOT' on the screen. 
+ - Wait a few seconds
+ - Press the reset button and you are back at the BASIC prompt. Enter
+
+   POKE &HFF03,&H34:EXEC 9736
+
+ - And you should see 'OS9 BOOT' on the screen again. Just wait a few seconds and
+   you should see the main OS-9 screen and eventually a prompt.
+
+I did look in to virtualising the ACIA, but the problem is that the primary PIA in a 
+Dragon 32 is from FF00 to FF07, whereas in a Dragon 64 its from FF00 to FF03 with 
+the ACIA from FF04 to FF07. You would need to at least cut the CS0/CS1 signals of the
+primary PIA and then have an inverter between the CPU A2 and the CS0/CS1 signals. 
+That would just lock the primary PIA to FF00 to FF03. Then I would need to write 
+some code to send back some appropriate dummy values when FF04 to FF07 is read.
 
 Thanks
 ------

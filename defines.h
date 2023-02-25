@@ -46,11 +46,12 @@
 #define reg_moder_dataout	s8
 #define reg_moder_datain	s9
 // see further down. #define reg_next_fdc_irq_drq	s10
-#define reg_fdc_irq_all_off_mask s11
-#define reg_fdc_drq_all_off_mask s12
-//#define reg_gpiob_base	s12
-//#define reg_bit6_high	s13
-#define reg_e_counter	s13
+//#define reg_fdc_irq_all_off_mask s11
+//#define reg_fdc_drq_all_off_mask s12
+#define reg_fdc_drq_countdown	s11
+#define reg_fdc_irq_countdown	s12
+//#define reg_e_counter	s13
+#define reg_fdc_irq_drq_state	s13
 #define reg_ccmram_log	s14
 
 #define reg_fdc_status	s15
@@ -150,7 +151,8 @@
 #define S_TANDY_MOTOR    0x08
 #define S_TANDY_PRECOMP  0x10
 #define S_TANDY_DENSITY  0x20
-#define S_TANDY_DRIVE_4  0x40
+//#define S_TANDY_DRIVE_4  0x40
+#define S_TANDY_SIDE  0x40		// Not sure of the history of this, but DRIVE 4 became the Side select
 #define S_TANDY_HALT     0x80
 
 #define S_LASTSTEPDIR	0x80
@@ -222,4 +224,21 @@
 #define VDK_COMPRESSION_FLAG_AND_NAME_LENGTH	11
 
 #define SIZEOF_ONE_DISK_TRACK           18*256
+#define DISK_40_18_256_SIZE		40*18*256
+#define DISK_40_18_256_DOUBLE_SIDED_SIZE	2*40*18*256
+#define DISK_80_18_256_DOUBLE_SIDED_SIZE	2*80*18*256
+#define DISK_35_18_256_SIZE		35*18*256
+
+
+// IRQ DRQ countdown delay stuff
+#define DRQ_OFF				0x00
+#define DRQ_ON				0x80
+
+#define IRQ_OFF				0x00
+#define IRQ_ON				0x80
+
+#define WAIT_ZERO_CYCLES_UNTIL_CHANGE	0x01
+#define WAIT_3_CYCLES_UNTIL_CHANGE	0x04	// 3 may work (ie. 2 cycles)
+#define WAIT_8_CYCLES_UNTIL_CHANGE	0x09
+#define WAIT_15_CYCLES_UNTIL_CHANGE	0x11
 

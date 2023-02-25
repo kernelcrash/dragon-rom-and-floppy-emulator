@@ -183,7 +183,7 @@ GET_FILE_COUNT
 
 ; X is the stm32f4 address register pointer . 0x0080 is the first entry, 0x0100 is the 2nd and so on.
 PRINT_MENU_LINE
-	PSHS	B,X
+	PSHS	B,X,Y
 
 	PSHS	B
 	; set the stm32f4 address regiser
@@ -211,14 +211,18 @@ PRINT_MENU_LINE
 
 	TFR	B,A
 	ADDA	#$41			// Should put A. for the first entry
+	TFR	X,Y
 	STA	,X+
 	LDA	#$6e
 	STA	,X+
 	LDB	#30		// max chars per line
 	LDA	MENU_CTRL_DATA_REGISTER
 	BNE	L5@
+	LDA	#' '+$40			// For the last line we would have written a letter and a . . Now write over them with spaces
+	STA	,Y+
+	STA	,Y+
 	LDA	#$00
-	PULS	B,X
+	PULS	B,X,Y
 	RTS
 L2@	LDA	MENU_CTRL_DATA_REGISTER
 L5@	BEQ	L1@
@@ -232,7 +236,7 @@ L3@	ANDA	#$1f
 	ORA	#$40
 L4@	STA	,X+
 	BRA	L2@
-L1@	PULS	B,X
+L1@	PULS	B,X,Y
 	LDA	#$01
 	RTS
 

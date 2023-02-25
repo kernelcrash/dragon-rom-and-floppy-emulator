@@ -89,41 +89,37 @@
         vstr     reg_bit8_high,[r11,ODR]
 #endif
 // work out whether to fire NMI
-	vmov	r1,reg_next_fdc_irq_drq
 	vmov	r0,reg_fdc_status
-	mov	r12,r1
 	tst	reg_main_thread_command,#MAIN_COMMAND_SEEK_COMPLETE
 	beq	2f
 	//ITTT	NE
 	mov	reg_main_thread_command,#0	// end the command
-	lsl	r1,#2
-	bfi	r1,r12,#0,#8	// reinsert the lowest 8 bits again (so that signals are repeated until changed)
-	//ITTT	NE
-	vmov	r3,reg_fdc_drq_all_off_mask
-	orr	r1,r3			// queue up an INTRQ immediately
+	movs	r3,#IRQ_ON + WAIT_ZERO_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_irq_countdown,r3
 	and	r0,#~(F_BUSY)
+	vmov	r3,reg_fdc_actual_track
+	cmp	r3,#0
+	ITE	EQ
+	orreq	r0,#F_TRACK0
+	andne	r0,#~(F_TRACK0)
 2:
 	vmov	reg_fdc_status,r0
-	vmov	reg_next_fdc_irq_drq,r1
 
-	// reg_next_fdc_irq_drq is effectively a queue of pairs of bits. One for INTRQ, the other for DRQ.
-	// Ideally we just shift it every E clock and have an 'up to 12 cycle delay when needing to assert
-	// these signals, but that appears to be too quick in some cases, hence the E counter means we 
-	// only shift the queue every 2nd E clock, and get an up to 24 cycle delay
-	// once the bits end up in bits 31 and bit 30, we shift the top two bits into bit 7 and bit 6
-	// then we check the NMI enable from the latch and shove the bits out as PC7 (_NMI ) and PC6 (CART)
-	// So essentially PC7 is INTRQ with the latch enable and PC6 is just DRQ
-	// In the Coco INTRQ is still going to _NMI but the latch enable bit is DENSITY bit of the latch
-	// And now DRQ ends up on _HALT but with latch bit 7 as the enable.
-	// There is also some logic that syas when INTRQ goes high, and the DENSITY latch bit is set, that
-	// the latch _HALT enable bit will be auto cleared.
+	// reg_fdc_drq_countdown - bit 7 indicates the desired state for DRQ . Bits 6-0 is a 7 bit countdown
+	//                         timer that indicates the number of E cycles to wait before performing the
+	//                         change
+	// reg_fdc_irq_countdown - bit 7 indicates the desired state for IRQ . Bits 6-0 is a 7 bit countdown
+	//                         timer that indicates the number of E cycles to wait before performing the
+	//                         change
+	// reg_fdc_irq_drq_state - stores the current state of virtual IRQ and DRQ in bits 7 and 6 respectively
+
 	//
-	// NOTE: In Dragon disk controller
+	// NOTE: In the Dragon disk controller
 	//
 	//	DRQ is connected directly to CART
 	//	INTRQ goes through a NAND gate to _NMI. So if bit 5 of the latch is high, the NAND output can go low (so INTRQ is sort of inverted to drive _NMI)
 	//
-	// NOTE: In Tandy Disk controller
+	// NOTE: In the Tandy Disk controller
 	//
 	//	DRQ goes through some gates and when DRQ is high _HALT will be high. But when DRQ goes low (ie. the DRQ is over) then _HALT goes low
 	//		But the semantics of the FDC is that after you read or load the data registor of the FDC, DRQ goes low. ie. the code to
@@ -132,55 +128,74 @@
 	//		the the cpu is halted again
 	//	INTRQ goes through some gates such that when INTRQ goes high AND the DENSITY bit of the latch is high then _NMI will go low
 	//		INTRQ going low also CLEARs a D flip flop such that _HALT will be forced high
-	vmov	r12,reg_e_counter
-	adds	r12,#1
-	vmov	reg_e_counter,r12
-	ands	r12,#0x0003	// Most stuff works with 0x0001 here, but a a few things like the Infocom stuff requires 0x0003
-	bne	1f
-	mov	r3,r1
-	lsls	r1,#2
-	bfi	r1,r3,#0,#8	// reinsert the lowest 8 bits again (so that signals are repeated until changed)
-	vmov	reg_next_fdc_irq_drq,r1
+	
 
-	lsrs	r1,#24	// bit 31 -> 7, bit 30 -> 6
-	ands	r1,#0xc0
-	vmov	reg_fdc_irq_drq,r1	//
-	vmov	r12,reg_fdc_system
- 	tst	r12,#S_DRAGON_TANDY_MODE
+	vmov	r12,reg_fdc_irq_drq_state
+	vmov	r1,reg_fdc_drq_countdown
+	ands	r3,r1,#0x7f
+	beq	60f		// if we already hit 0 then we don't need to change anything
+	subs	r3,#1
+	bne	60f		// if we are still counting down also do nothing.
+	tst	r1,#0x80	// we jsut hit 0, so update bit 6 of the virtual IRQ/DRQ
+	ITE	NE
+	orrne	r12,#0x40	// set drq
+	andeq	r12,#~0x40	// clear drq
+60:	ands	r1,#~0x7f
+	orr	r1,r3
+	vmov	reg_fdc_drq_countdown,r1
+	vmov	reg_fdc_irq_drq_state,r12
+
+	vmov	r12,reg_fdc_irq_drq_state
+	vmov	r1,reg_fdc_irq_countdown
+	ands	r3,r1,#0x7f
+	beq	61f		// if we already hit 0 then we already changed the state
+	subs	r3,#1
+	bne	61f
+	tst	r1,#0x80	// we jsut hit 0, so test bit 7 of the original countdown reg. It is the desired state once it counts down
+	ITE	NE
+	orrne	r12,#0x80	// set irq
+	andeq	r12,#~0x80	// clear irq
+61:	ands	r1,#~0x7f
+	orr	r1,r3
+	vmov	reg_fdc_irq_countdown,r1
+	vmov	reg_fdc_irq_drq_state,r12
+	mov	r3,r12
+
+	vmov	r12,reg_fdc_system	// get the latch state
+	tst	r12,#S_DRAGON_TANDY_MODE
 	beq	3f
 // Dragon
-	// assign 'current' reg_fdc_irq_drq to what was shifted to bits 31 and 30 of reg_next_fdc_irq_drq
-	vmov	reg_fdc_irq_drq,r1	// 
+	ands	r3,#0xc0
 	tst	r12,#S_DRAGON_NMI
 	ITE	NE
-	eorne	r1,#NMI_HIGH		// if the NMI flag in the latch is high, flip the IRQ bit
-	orreq	r1,#NMI_HIGH		// if the NMI flah in the latch is low, NMI must stay high
-	// at this point r1 bit7 is the state we want for _NMI and bit6 is the state we want for the CART pin	
-	orrs	r1,#HALT_HIGH
+	eorne	r3,#NMI_HIGH	// if the NMI flag in the latch is high, flip the IRQ bit
+	orreq	r3,#NMI_HIGH	// if the NMI flag in the latch is low, NMI must stay high
+	// at this point r3 bit7 is the state we want for _NMI and bit6 is the state we want for the CART pin
+	orrs	r3,#HALT_HIGH	// Make sure _HALT is high on the Dragon
 	b	4f
-3:
+
 // Tandy
-	tst	r1,#0x40	// check the DRQ bit that will become _HALT
+3:	tst	r3,#WD1793_DRQ	// check the DRQ bit that will become _HALT
 	IT	NE
-	orrne	r1,#0x2000	// Move our DRQ state into bit 13 in prep to send to PC13
-	ands	r1,#0x2080	// Mask so that bit 13 (DRQ) and bit 7 (INTRQ) are ready for the next steps
+	orrne	r3,#HALT_HIGH	// Move our DRQ state into bit 13 in prep to send to PC13
+	ands	r3,#(HALT_HIGH|NMI_HIGH)	// Mask so that bit 13 (DRQ) and bit 7 (INTRQ) are ready for the next steps
 	
 	// bit 7 of r1 is the desired INTRQ state
-	tst	r1,#0x80
+	tst	r3,#WD1793_IRQ
 	IT	EQ
 	andeq	r12,#~S_TANDY_HALT		// force bit 7 of latch to low
 
 	tst	r12,#S_TANDY_DENSITY		// DENSITY is used to enable INTRQ in Tandy
 	ITE	NE
-	eorne	r1,#NMI_HIGH		// if the NMI flag in the latch is high, flip the IRQ bit
-	orreq	r1,#NMI_HIGH		// if the NMI flag in the latch is low, NMI must stay high
+	eorne	r3,#NMI_HIGH		// if the NMI flag in the latch is high, flip the IRQ bit
+	orreq	r3,#NMI_HIGH		// if the NMI flag in the latch is low, NMI must stay high
 
 	tst	r12,#S_TANDY_HALT
 	IT	EQ
-	orreq	r1,#HALT_HIGH		// 
+	orreq	r3,#HALT_HIGH		// 
 
 4:
-	str	r1,[r2,ODR]		// assume GPIOC is r2
+	str	r3,[r2,ODR]		// assume GPIOC is r2
 	vmov	reg_fdc_system,r12	// update latch
 
 	
@@ -222,13 +237,7 @@
 .section .rodata
 
 rom_base:
-// early versions of the code allowed you to embed a rom file here at compile time. I am now pulling roms from SD card
-// and copying to ram
-// be careful if you add roms and later delete them. The old ones might be still in the STM32 flash
-//.incbin "roms/ghost-attack.rom"
-//.incbin "roms/cave-hunter.rom"
-//.incbin "roms/starship-chameleon.rom"
-//.incbin "roms/dragondos-1-0.rom"
+
 
 .section ccmram
 low_64k_base:
@@ -445,9 +454,6 @@ init_fpu_regs:
 	//movs	r0,#0x40
 	//vmov	reg_bit6_high,r0
 
-	movs	r0,#0
-	vmov	reg_e_counter,r0
-
 	movs	r0,#0x100
 	vmov	reg_bit8_high,r0
 
@@ -479,9 +485,6 @@ init_fdc:
 	movs	r0,#0
 	vmov	reg_fdc_data,r0
 
-	movs	r0,#0
-	vmov	reg_fdc_irq_drq,r0
-	vmov	reg_next_fdc_irq_drq,r0
 
 	movs	r0,#0
 	vmov	reg_fdc_command,r0
@@ -498,11 +501,13 @@ init_fdc:
 	orrs	r0,#S_FDC_PRESENT
 	vmov	reg_fdc_system,r0
 
-	mov32	r0,#0x55555555		// just leave DRQ bits if masked with this
-	vmov	reg_fdc_irq_all_off_mask,r0
+	movs	r0,#1
+	vmov	reg_fdc_drq_countdown,r0
+	vmov	reg_fdc_irq_countdown,r0
+	movs	r0,#0
+	vmov	reg_fdc_irq_drq_state,r0
 
-	mov32	r0,#0xaaaaaaaa		// just leave IRQ bits if masked with this
-	vmov	reg_fdc_drq_all_off_mask,r0
+
 	bx	lr
 
 .type deactivate_fdc, %function
@@ -587,6 +592,7 @@ exit_EXTI4_not_a_cart_or_p2:
 	str	r0,[r2,ODR]
 1$:	unrolled_exit_EXTI4
 
+
 // Emulation of the WD279x
 handle_fdc:
 #ifdef DEBUG_FDC
@@ -634,7 +640,7 @@ fdc_status_read:
 	b	4$
 // Tandy
 5$:
-	tst	r0,#(S_TANDY_DRIVE_4|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2)
+	tst	r0,#(S_TANDY_DRIVE_3|S_TANDY_DRIVE_2)
 4$:		
 	IT	NE
 	orrne	r1,#F_NOTREADY		// set drive 2,3,4 to not ready
@@ -656,15 +662,13 @@ fdc_status_read:
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
 	// reset IRQ
-	vmov	r12,reg_fdc_irq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	vmov	reg_next_fdc_irq_drq,r3
+	movs	r3,#IRQ_OFF+WAIT_ZERO_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_irq_countdown,r3
 
 #ifdef ENABLE_FDC_CCM_LOGGING
-	movs	r0,#0x18
-	lsrs	r1,#8
-	log_r0_r1_to_ccm_uses_r12
+//	movs	r0,#0x18
+//	lsrs	r1,#8
+//	log_r0_r1_to_ccm_uses_r12
 #endif
 
         vmov	r1,reg_moder_datain
@@ -687,14 +691,23 @@ fdc_data_read:
         vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
 
 	mov32	r0,#track_buffer
+	// offset the track_buffer by one tracks worth if we are on the other side of the disk
+	// this has to be done here to make Nitros-9 work
+	vmov	r3,reg_fdc_system
+	tst	r3,#S_SIDE
+	IT	NE
+	addne	r0,#(18*256)
+
 	vmov	r3,reg_track_buffer_ptr
 	movs	r1,#0
 
 	vmov	r12,reg_fdc_read_length
 	cmp	r12,#0
-	ITE	NE
+	ITTEE	NE
 	ldrbne	r1,[r0,r3]		// get byte from the track buffer
+	movne	r12,#DRQ_ON+WAIT_15_CYCLES_UNTIL_CHANGE	
 	vmoveq	r1,reg_fdc_data		// or get the data register
+	moveq	r12,#DRQ_OFF+WAIT_ZERO_CYCLES_UNTIL_CHANGE	// if we are in dummy read mode we need to make sure we dont trigger a DRQ
 	vmov	reg_fdc_data,r1		// update the data register
 
 	lsls	r1,#8
@@ -703,21 +716,20 @@ fdc_data_read:
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
 
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	vmov	reg_next_fdc_irq_drq,r3
+	// reset DRQ immediately. This weirdness is because we can't queue up two transitions of DRQ
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
 
-	vmov	r12,reg_fdc_command	// check what the last command was
-	tst	r12,#0x80
+	vmov	r0,reg_fdc_command	// check what the last command was
+	tst	r0,#0x80
 	beq	10$
 	// previous command was >=0x80 (eg. read or write sector)
-	cmp	r12,#0xd0
+	cmp	r0,#0xd0
 	beq	10$	
-	vmov	r12,reg_next_fdc_irq_drq
-	orr	r12,#(WD1793_DRQ)
-	vmov	reg_next_fdc_irq_drq,r12
+	// This is queuing up the next DRQ
+	mov	r3,r12			// Get the countdown timer setting for DRQ. Its needs to be OFF for a dummy read
+	vmov	reg_fdc_drq_countdown,r3
 10$:
 	vmov	r12,reg_fdc_read_length
 	cmp	r12,#0
@@ -737,9 +749,9 @@ fdc_data_read:
 	vmov	reg_fdc_read_length,r12
 	mov	r0,#0x0ff		// 256 byte sectors
 	tst	r12,r0		// see if bottom 8 bits are clear
-	IT	EQ
+	//IT	EQ
 // must have crossed a sector boundary. Everything seems to just read one sector at a time, so leaving off
-	addseq	r3,#1		// incr the sector number
+	//addseq	r3,#1		// incr the sector number
 	vmov	reg_fdc_sector,r3
 	cmp	r12,#0
 	bne	2$
@@ -748,20 +760,21 @@ fdc_data_read:
 	ands	r12,#~(F_DRQ|F_BUSY)
 	vmov	reg_fdc_status,r12
 	
-	vmov	r12,reg_next_fdc_irq_drq
-	and	r12,#~(WD1793_DRQ)		// we might have set DRQ earlier. Turn it off
-	orr	r12,#WD1793_IRQ
-	vmov	reg_next_fdc_irq_drq,r12
+	movs	r12,#DRQ_OFF+WAIT_ZERO_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_drq_countdown,r12
+	movs	r12,#IRQ_ON+WAIT_3_CYCLES_UNTIL_CHANGE      // This seems quite important to Nitros-9. 
+	vmov	reg_fdc_irq_countdown,r12
+
 
 // Put some data on the databus
 2$:
 
 
 #ifdef ENABLE_FDC_CCM_LOGGING
-#	movs	r0,#0x1b
-#	lsrs	r1,#8
-#	log_r0_r1_to_ccm_uses_r12
-#
+	movs	r0,#0x1b
+	lsrs	r1,#8
+	log_r0_r1_to_ccm_uses_r12
+
 #endif
 
         vmov	r1,reg_moder_datain
@@ -859,26 +872,26 @@ fdc_command_write:
 5$:
 	//clear all bits. D->R[0]=D->Track[D->Drive]? 0:F_TRACK0
 	movs	r0,#0
-	vmov	r1,reg_fdc_actual_track
-	cmp	r1, #0
+	vmov	r3,reg_fdc_actual_track
+	cmp	r3, #0
 	IT	EQ
 	moveq	r0,#F_TRACK0
 	vmov	reg_fdc_status,r0
 
 // if(V&C_IRQ) D->IRQ=WD1793_IRQ;
-6$:	vmov	r0,reg_next_fdc_irq_drq
-	tst	r3,#C_IRQ
+6$:	tst	r1,#C_IRQ
 	ITT	NE
-	orrne	r0,#WD1793_IRQ
-	vmovne	reg_next_fdc_irq_drq,r0
+	movne	r0,#IRQ_ON+WAIT_ZERO_CYCLES_UNTIL_CHANGE
+	vmovne	reg_fdc_irq_countdown,r0
 
         unrolled_exit_EXTI4
 
 // all commands except D0
 1$:
 	// pretty much all of them will generally reset NMI and set DRQ off
-	movs	r3,#0
-	vmov	reg_next_fdc_irq_drq,r3
+	movs	r3,#WAIT_ZERO_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_irq_countdown,r3
+	vmov	reg_fdc_drq_countdown,r3
 
 
 	vmov	r12,reg_fdc_status
@@ -973,7 +986,8 @@ fdc_command_step_out_and_update:
 	//tst	r12,#S_DRIVE		// r12 still has the system register
 	vmov	reg_fdc_status,r1
 
-	ldr	r3,=main_thread_command
+	mov32	r3,#main_thread_command
+	//ldr	r3,=main_thread_command
 	movs	r1,#MAIN_THREAD_SEEK_COMMAND
         str     r0,[r3, MAIN_STRUCT_DATA]           // write cylinder to seek to 
         mov	reg_main_thread_command,r1
@@ -987,19 +1001,20 @@ fdc_command_step_out_and_update:
 
 
 fdc_command_read_sector:
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	orr	r3,#WD1793_DRQ
-	vmov	reg_next_fdc_irq_drq,r3
+	// reset DRQ immediately
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
+	// queue up the first DRQ for the first byte
+	movs	r3,#DRQ_ON+WAIT_15_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_drq_countdown,r3
 	// assume 256 byte sector
 	movs	r0,#0		// set to beginning of track
 
+	// all the code to check the disk side is removed due to Nitros-9 sending very late writes to the latch
 	vmov	r12,reg_fdc_system
-	tst	r1,#C_UPDATE_SSO
-	ITTE	NE
-	addne	r0,#(18*256)
+	tst	r1,#C_UPDATE_SSO	// The Tandy wont use this bit usually, but the Dragon will
+	ITE	NE
 	orrne 	r12,#S_SIDE
 	andeq 	r12,#~(S_SIDE)
 	vmov	reg_fdc_system,r12
@@ -1031,20 +1046,21 @@ fdc_command_read_sector:
 	unrolled_exit_EXTI4
 
 fdc_command_write_sector:
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	orr	r3,#WD1793_DRQ
-	vmov	reg_next_fdc_irq_drq,r3
+	// reset DRQ immediately
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
+	// queue up the first DRQ for the first byte
+	movs	r3,#DRQ_ON+WAIT_15_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_drq_countdown,r3
 
 	// assume 256 byte sector
 	movs	r0,#0		// set to beginning of track
 
+	// all the code to check the disk side is removed due to Nitros-9 sending very late writes to the latch
 	vmov	r12,reg_fdc_system
-	tst	r1,#C_UPDATE_SSO
-	ITTE	NE
-	addne	r0,#(18*256)
+	tst	r1,#C_UPDATE_SSO	// The Tandy wont use this bit usually, but the Dragon will
+	ITE	NE
 	orrne 	r12,#S_SIDE
 	andeq 	r12,#~(S_SIDE)
 	vmov	reg_fdc_system,r12
@@ -1095,6 +1111,10 @@ fdc_track_write:
 	IT	EQ
 	vmoveq	reg_fdc_track,r1		// upate track if not busy
 
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
+
         unrolled_exit_EXTI4
 
 fdc_sector_write:
@@ -1110,6 +1130,10 @@ fdc_sector_write:
 	IT	EQ
 	vmoveq	reg_fdc_sector,r1
 
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
+
         unrolled_exit_EXTI4
 
 fdc_data_write:
@@ -1117,14 +1141,13 @@ fdc_data_write:
 	//lsrs	r1,r1,#8
 	lsrs	r1,r12,#8
 
-#ifdef TEST_ENABLE_FDC_CCM_LOGGING
-	//log_r0_r1_to_ccm_uses_r12
+#ifdef ENABLE_FDC_CCM_LOGGING
+	log_r0_r1_to_ccm_uses_r12
 #endif
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	vmov	reg_next_fdc_irq_drq,r3
+	// reset DRQ immediately
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
 
 // make sure we only queue up a DRQ if we are writing sectors
 	vmov	r12,reg_fdc_command
@@ -1132,9 +1155,8 @@ fdc_data_write:
 	beq	10$
 	cmp	r12,#0xd0
 	beq	10$	
-        vmov    r12, reg_next_fdc_irq_drq
-        orr     r12,#(WD1793_DRQ)
-        vmov    reg_next_fdc_irq_drq,r12
+	movs	r12,#DRQ_ON+WAIT_15_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_drq_countdown,r12
 10$:
 #ifdef ENABLE_FDC_CCM_LOGGING
 	//log_r0_r1_to_ccm_uses_r12
@@ -1149,6 +1171,13 @@ fdc_data_write:
 // WRITE DATA TO SECTOR. non zero write length
 1$:
 	mov32	r0,#track_buffer
+	// offset the track_buffer by one tracks worth if we are on the other side of the disk
+	// this has to be done here to make Nitros-9 work
+	vmov	r3,reg_fdc_system
+	tst	r3,#S_SIDE
+	IT	NE
+	addne	r0,#(18*256)
+
 	vmov	r3,reg_track_buffer_ptr
 	strb	r1,[r0,r3]		// store byte in track buffer
 
@@ -1170,10 +1199,11 @@ fdc_data_write:
         ands    r12,#~(F_DRQ|F_BUSY)
         vmov    reg_fdc_status,r12
 
-        vmov    r12,reg_next_fdc_irq_drq
-	and	r12,#~(WD1793_DRQ)
-        orr     r12,#WD1793_IRQ
-        vmov    reg_next_fdc_irq_drq,r12
+	movs	r12,#DRQ_OFF+WAIT_ZERO_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_drq_countdown,r12
+	// write sector seems to need a larger delay here than read sector. not sure why
+	movs	r12,#IRQ_ON+WAIT_15_CYCLES_UNTIL_CHANGE
+	vmov	reg_fdc_irq_countdown,r12
 
 	mov32	r0,#FDC_WRITE_FLUSH_DEFAULT
 	ldr	r1,=fdc_write_flush_count
@@ -1185,6 +1215,7 @@ fdc_data_write:
 // -----------------
 
 // Update the latch.
+// Nitros-9 for whatever strange reason issues a read sector command THEN writes to the latch to switch sides
 fdc_system_write:
 	ldr	r1,[r2,C_TO_D_OFFSET+IDR]	// read databus again
 	lsrs	r1,r1,#8
@@ -1200,9 +1231,15 @@ fdc_system_write:
 	and	r1,#(S_DRAGON_NMI|S_DRAGON_PRECOMP|S_DRAGON_DENSITY|S_DRAGON_MOTOR|S_DRAGON_DRIVE)
 	b	1$
 2$:
+// Tandy	
 	
-	and	r12,#~(S_TANDY_HALT|S_TANDY_DRIVE_4|S_TANDY_DENSITY|S_TANDY_PRECOMP|S_TANDY_MOTOR|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2|S_TANDY_DRIVE_1)
-	and	r1,#(S_TANDY_HALT|S_TANDY_DRIVE_4|S_TANDY_DENSITY|S_TANDY_PRECOMP|S_TANDY_MOTOR|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2|S_TANDY_DRIVE_1)
+	// clear the bottom bits 
+	and	r12,#~(S_TANDY_HALT|S_TANDY_SIDE|S_TANDY_DENSITY|S_TANDY_PRECOMP|S_TANDY_MOTOR|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2|S_TANDY_DRIVE_1)
+	and	r1,#(S_TANDY_HALT|S_TANDY_SIDE|S_TANDY_DENSITY|S_TANDY_PRECOMP|S_TANDY_MOTOR|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2|S_TANDY_DRIVE_1)
+	tst	r1,#S_TANDY_SIDE
+	ITE	NE
+	orrne	r1,#S_SIDE	// set S_SIDE to one
+	andeq	r1,#~S_SIDE	// set S_SIDE to zero
 1$:	orr	r12,r1
 	vmov	reg_fdc_system,r12
 

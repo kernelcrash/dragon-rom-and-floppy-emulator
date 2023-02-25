@@ -407,15 +407,35 @@ void config_gpio_buttons(void) {
 FRESULT load_disk_header(FIL *fil,char *fname, char *buffer) {
         UINT BytesRead;
         FRESULT res;
+	FSIZE_t sz;
 
         res = f_open(fil, fname, FA_READ);
+	sz = f_size(fil);
 
 	if (suffix_match(fname, DSK_SUFFIX)) {
+
 		buffer[VDK_HEADER_SIZE_LSB] = 0x00; /// make it so it wont seek at all
 		buffer[VDK_HEADER_SIZE_MSB] = 0x00;
 
-		buffer[VDK_TRACKS] = 35;
-		buffer[VDK_SIDES] = 1;
+		switch (sz) {
+			case DISK_40_18_256_SIZE:
+				buffer[VDK_TRACKS] = 40;
+				buffer[VDK_SIDES] = 1;
+				break;
+			case DISK_40_18_256_DOUBLE_SIDED_SIZE:
+				buffer[VDK_TRACKS] = 40;
+				buffer[VDK_SIDES] = 2;
+				break;
+			case DISK_80_18_256_DOUBLE_SIDED_SIZE:
+				buffer[VDK_TRACKS] = 80;
+				buffer[VDK_SIDES] = 2;
+				break;
+			case DISK_35_18_256_SIZE:
+				buffer[VDK_TRACKS] = 35;
+				buffer[VDK_SIDES] = 1;
+				break;
+		}
+
 	}
 	if (suffix_match(fname, VDK_SUFFIX)) {
         	if (res == FR_OK) {
@@ -435,7 +455,6 @@ FRESULT __attribute__((optimize("O0")))  load_track(FIL *fil, uint32_t track_num
 	offset = header_length + (track_number * track_size);
 
 	res = f_lseek(fil, offset);
-	res = FR_OK;
 	if (res == FR_OK) {
 		// load 2 sides regardless of whether the disk is single sided or not
 		res = f_read(fil, track, 2 * 18 * 256, &BytesRead);
@@ -444,6 +463,8 @@ FRESULT __attribute__((optimize("O0")))  load_track(FIL *fil, uint32_t track_num
                 for (uint32_t i=0; i< SIZEOF_ONE_DISK_TRACK; i++) {
                         track[i] = 0;
                 }
+		// fake success
+		res = FR_OK;
 	}
 
 	return res;
