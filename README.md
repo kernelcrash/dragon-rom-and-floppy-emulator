@@ -232,7 +232,7 @@ generate an EXTI4 interrupt. What this all means is that the first line of the
 EXTI4 interrupt handler is executed  just after the leading edge of E exactly
 when you would like it to start executing. If you use the +ve edge of E to 
 trigger the EXTI interrupt it will take 100ns or so before the first line is 
-executed so you always waste 100ns of the E high time( a bit of 500ns). On the 
+executed so you always waste 100ns of the E high time( a bit over 500ns). On the 
 Dragon the loss of the 100ns does not really affect things, but this was done
 as an experiment to work out ways of bringing the interrupt handler forward.
 
@@ -304,7 +304,7 @@ is no header anymore (which VDK files have).
 
 About OS-9 and Nitros-9
 --------------------------------------------
-OS-9 iand Nitros-9 for a Coco 2 with 64K should just work fine. Basically insert the disk, 
+OS-9 and Nitros-9 for a Coco 2 with 64K should just work fine. Basically insert the disk, 
 type DOS and you should see 'OS9 BOOT' or 'NITROS9 BOOT' and eventually the main OS-9 screen
 and a prompt.
 
@@ -331,6 +331,10 @@ the ACIA from FF04 to FF07. You would need to at least cut the CS0/CS1 signals o
 primary PIA and then have an inverter between the CPU A2 and the CS0/CS1 signals. 
 That would just lock the primary PIA to FF00 to FF03. Then I would need to write 
 some code to send back some appropriate dummy values when FF04 to FF07 is read.
+
+NitrOS-9 will work on the Dragon as well. In my case, none of the publically 
+downloadable images work with a 'Dragon 32 upgraded to 64K'. You will need to edit
+level1/d64/makefile and set UPGRADED32 = 1 , then compile to generate new dsk images.
 
 Thanks
 ------
