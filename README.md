@@ -55,7 +55,7 @@ Using a STM32F407VET6 or STM32F407VGT6 board
 
    GND         - GND
 ```
-Looking at the cartridge socket
+Looking at the cartridge socket (pin 1 and 2 are towards the rear of the computer)
 ```
        1  +12V           2  +12V
        3  !HALT - PC13   4  !NMI - PC7
@@ -99,7 +99,7 @@ If the board is in Tandy mode:
   - a file called tandydos.rom in the root of the SD card. It will be 
     RS-DOS 1.1 or similar
 
-The order in which you copy files into the dragon or tandy dirctories is 
+The order in which you copy files into the dragon or tandy directories is 
 the order they will appear when you are cycling through disks or roms (ie.
 its not alphabetical).
 
