@@ -127,7 +127,7 @@ There is also a special ROM called menu.rom. If you have built it using lwtools
 (see the build.sh script), you can copy menu.rom to the root of the SD card as
 well. If you power off your Dragon or Coco, and reset the stm32f4 board, the Dragon
 or Coco should now load the menu.rom at 0xC000 and show a disk/rom menuing system
-called KCDFS (or renamed to KCCFS if you set the jumper for Tandy mode.
+called KCDFS (or renamed to KCCFS if you set the jumper for Tandy mode).
 From the menu you can select a disk image or ROM and the Dragon or Coco will then boot
 into what you selected (ie. if you chose a rom it will boot that ROM. If you
 chose a disk, it will boot into BASIC with a DOS loaded and the disk image
@@ -337,7 +337,7 @@ primary PIA and then have an inverter between the CPU A2 and the CS0/CS1 signals
 That would just lock the primary PIA to FF00 to FF03. Then I would need to write 
 some code to send back some appropriate dummy values when FF04 to FF07 is read.
 
-NitrOS-9 will work on the Dragon as well. In my case, none of the publically 
+NitrOS-9 will work on the Dragon as well. In my case, none of the publicly 
 downloadable images work with a 'Dragon 32 upgraded to 64K'. You will need to edit
 level1/d64/makefile and set UPGRADED32 = 1 , then compile to generate new dsk images.
 
