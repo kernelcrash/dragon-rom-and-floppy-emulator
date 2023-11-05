@@ -229,7 +229,7 @@ Technical
 When E goes low (-ve edge) it triggers TIM4 (PB7) to generate a one-pulse in 190
 or so nanoseconds. The one-pulse comes out of PB6. PB6 is connected to PC4 to
 generate an EXTI4 interrupt. What this all means is that the first line of the 
-EXTI4 interrupt handler is often executed 290ns or from the fall of E. That may
+EXTI4 interrupt handler is often executed 290ns or so from the fall of E. That may
 seem silly as generally E is low for about 550ns when the 6809E is clocked at 
 0.9MHz. But if a program uses 'the speed poke', then E is potentially low for
 half the time (ie. 280-ish ns). Either way, at the start of the EXTI4 interrupt
@@ -250,7 +250,7 @@ And as soon as it goes low tri-state the databus bins and exit the interrupt rou
 The P2 peripheral access is different depending if we are in Dragon or Tandy mode
 
  - - The Dragon has a WD2793 or similar at 0xff40 to 0xff43, and a related latch at 0xff48
-   - The Tandy as a similar FDC at 0xff48 to 0xff4b, and it's related latch at 0xff40
+   - The Tandy has a similar FDC at 0xff48 to 0xff4b, and it's related latch at 0xff40
 
 Regardless of the mapping, the FDC and latch are emulated.
 
@@ -273,7 +273,7 @@ additional logic that says when INTRQ goes low that bit 7 of the latch
 will be forced low. So when INTRQ ends, _HALT must end up going high.
 
 This interrupt stuff ended up quite interesting as you need to delay it a bit. Initially
-this cause the branch that worked on the Dragon to be quite different to the one that
+this caused the branch that worked on the Dragon to be quite different to the one that
 worked with the Tandy ... and this paragraph does not do justice to how long it took
 to try to combine the two branches so the code base worked OK on both computers ;-)
 
