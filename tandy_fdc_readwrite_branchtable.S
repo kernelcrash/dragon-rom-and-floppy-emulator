@@ -1,22 +1,23 @@
-dragon_branchtable_fdc:
+tandy_branchtable_fdc:
 // WRITES
-	.short     ((fdc_command_write - branchtable_fdc)/2) /* 0xFF40 Command */
-	.short     ((fdc_track_write - branchtable_fdc)/2) /* 0xFF41 Track */
-	.short     ((fdc_sector_write - branchtable_fdc)/2) /* 0xFF42 Sector */
-	.short     ((fdc_data_write - branchtable_fdc)/2) /* 0xFF43 Data */
-	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF44 */
-	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF45 */
-	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF46 */
-	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF47 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF40 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF41 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF42 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF43 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF44 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF45 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF46 */
+	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF47 */
 
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF48 */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF49 */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF4A */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF4B */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF4C */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF4D */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF4E */
-	.short     ((fdc_system_write - branchtable_fdc)/2) /* 0xFF4F */
+	.short     ((fdc_command_write - branchtable_fdc)/2) /* 0xFF48 Command */
+	.short     ((fdc_track_write - branchtable_fdc)/2) /* 0xFF49 Track */
+	.short     ((fdc_sector_write - branchtable_fdc)/2) /* 0xFF4A Sector */
+	.short     ((fdc_data_write - branchtable_fdc)/2) /* 0xFF4B Data */
+	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF4C */
+	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF4D */
+	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF4E */
+	.short     ((fdc_unused_write - branchtable_fdc)/2) /* 0xFF4F */
+
 
 	.short     ((menu_ctrl_command_write - branchtable_fdc)/2) /* 0xFF50 */
 	.short     ((menu_ctrl_unused_write - branchtable_fdc)/2) /* 0xFF51 */
@@ -41,23 +42,24 @@ dragon_branchtable_fdc:
 
 
 // READS
-	.short     ((fdc_status_read - branchtable_fdc)/2) /* 0xFF40 Status */
-	.short     ((fdc_track_read - branchtable_fdc)/2) /* 0xFF41 Track */
-	.short     ((fdc_sector_read - branchtable_fdc)/2) /* 0xFF42 Sector */
-	.short     ((fdc_data_read - branchtable_fdc)/2) /* 0xFF43 Data */
+	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF40 */
+	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF41 */
+	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF42 */
+	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF43 */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF44 */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF45 */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF46 */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF47 */
 
-	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF48 */
-	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF49 */
-	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF4A */
-	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF4B */
+	.short     ((fdc_status_read - branchtable_fdc)/2) /* 0xFF48 Status */
+	.short     ((fdc_track_read - branchtable_fdc)/2) /* 0xFF49 Track */
+	.short     ((fdc_sector_read - branchtable_fdc)/2) /* 0xFF4A Sector */
+	.short     ((fdc_data_read - branchtable_fdc)/2) /* 0xFF4B Data */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF4C */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF4D */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF4E */
 	.short     ((fdc_unused_read - branchtable_fdc)/2) /* 0xFF4F */
+
 
 	.short     ((menu_ctrl_command_read - branchtable_fdc)/2) /* 0xFF50 */
 	.short     ((menu_ctrl_unused_read - branchtable_fdc)/2) /* 0xFF51 */
