@@ -1,7 +1,7 @@
 #include "defines.h"
 /*
    interrupt.S
-   kernel@kernelcrash.com 2021
+   kernel@kernelcrash.com 2023
 
    - 6809 E interrupt processing
      - simple ROM emulation
@@ -9,7 +9,10 @@
      - Emulation of the 6 bit latch (for NMI masking mainly)
 
 
-
+   - TIM version
+     - Uses TIM to create a one pulse delayed from the falling edge of E
+     - E is still connected to PC0, but also connected to PB7 as the trigger for the one pulse
+     - The one pulse output PB6 is then connected to PC4 which triggers a EXTI4 interrupt (I could never get an Update Event int to work well)
 
 */
 // Reminders (to me)
@@ -39,6 +42,7 @@
 	// expose init_fpu_regs so we can call it from main()
 	.global	init_fpu_regs
 	.global	init_fdc
+	.global update_exti_exit_vector
 	.global	e_follower
 	.global copy_from_fdc_track_registers
 	.global	update_fdc_track_registers
@@ -46,7 +50,7 @@
 	.global	deactivate_fdc
 
 	.global EXTI0_IRQHandler
-	.global EXTI2_IRQHandler
+	.global EXTI4_IRQHandler
 	.global rom_base
 	.global low_64k_base
 	.global high_64k_base
@@ -71,74 +75,155 @@
     movt \reg, #:upper16:\val
 .endm
 
-// manage what happens when E falls and we exit EXTI0
-.macro unrolled_exit_EXTI0
+.macro clear_EXTI0_FTSR
+        vstr    reg_zero,[r3,FTSR]
+.endm
+
+.macro set_EXTI0_FTSR
+        vstr    reg_bit0_high,[r3,FTSR]
+.endm
+
+// manage what happens when E falls and we exit EXTI4
+.macro unrolled_exit_EXTI4, mode
 	dsb
-#if defined(DEBUG_EXTI0_END)
+#if defined(OLD_DEBUG_EXTI4_END)
         vstr     reg_bit8_high,[r11,ODR]
 #endif
 // work out whether to fire NMI
-	vmov	r1,reg_next_fdc_irq_drq
 	vmov	r0,reg_fdc_status
-	mov	r12,r1
+	movs	r3,#IRQ_ON + E_CYCLES_FOR_IMMEDIATE_CHANGE
 	tst	reg_main_thread_command,#MAIN_COMMAND_SEEK_COMPLETE
-	beq	2f
-	//ITTT	NE
-	mov	reg_main_thread_command,#0	// end the command
-	lsl	r1,#2
-	bfi	r1,r12,#0,#8	// reinsert the lowest 8 bits again (so that signals are repeated until changed)
-	//ITTT	NE
-	vmov	r3,reg_fdc_drq_all_off_mask
-	orr	r1,r3			// queue up an INTRQ immediately
-	and	r0,#~(F_BUSY)
+	ITTT	NE
+	movne	reg_main_thread_command,#0	// end the command
+	vmovne	reg_fdc_irq_countdown,r3
+	andne	r0,#~(F_BUSY)
+	//vmov	r3,reg_fdc_actual_track
+	//cmp	r3,#0
+	//ITE	EQ
+	//orreq	r0,#F_TRACK0
+	//andne	r0,#~(F_TRACK0)
 2:
 	vmov	reg_fdc_status,r0
-	vmov	reg_next_fdc_irq_drq,r1
 
-	// reg_next_fdc_irq_drq is effectively a queue of pairs of bits. One for INTRQ, the other for DRQ.
-	// Ideally we just shift it every E clock and have an 'up to 12 cycle delay when needing to assert
-	// these signals, but that appears to be too quick in some cases, hence the E counter means we 
-	// only shift the queue every 2nd E clock, and get an up to 24 cycle delay
-	vmov	r12,reg_e_counter
-	adds	r12,#1
-	vmov	reg_e_counter,r12
-	ands	r12,#0x0003	// Most stuff works with 0x0001 here, but a a few things like the Infocom stuff requires 0x0003
-	bne	1f
-	mov	r3,r1
-	lsls	r1,#2
-	bfi	r1,r3,#0,#8	// reinsert the lowest 8 bits again (so that signals are repeated until changed)
-	vmov	reg_next_fdc_irq_drq,r1
+	// reg_fdc_drq_countdown - bit 7 indicates the desired state for DRQ . Bits 6-0 is a 7 bit countdown
+	//                         timer that indicates the number of E cycles to wait before performing the
+	//                         change
+	// reg_fdc_irq_countdown - bit 7 indicates the desired state for IRQ . Bits 6-0 is a 7 bit countdown
+	//                         timer that indicates the number of E cycles to wait before performing the
+	//                         change
+	// reg_fdc_irq_drq_state - stores the current state of virtual IRQ and DRQ in bits 7 and 6 respectively
 
-	lsrs	r1,#24	// bit 31 -> 7, bit 30 -> 6
-	ands	r1,#0xc0
+	//
+	// NOTE: In the Dragon disk controller
+	//
+	//	DRQ is connected directly to CART
+	//	INTRQ goes through a NAND gate to _NMI. So if bit 5 of the latch is high, the NAND output can go low (so INTRQ is sort of inverted to drive _NMI)
+	//
+	// NOTE: In the Tandy Disk controller
+	//
+	//	DRQ goes through some gates and when DRQ is high _HALT will be high. But when DRQ goes low (ie. the DRQ is over) then _HALT goes low
+	//		But the semantics of the FDC is that after you read or load the data registor of the FDC, DRQ goes low. ie. the code to
+	//		read a sector probably is just a tight loop that reads 256 bytes from the FDC data register. After each read, DRQ goes
+	//		low and the CPU is halted until another byte is ready, then it runs a few instructions up to reading another byte
+	//		the the cpu is halted again
+	//	INTRQ goes through some gates such that when INTRQ goes high AND the DENSITY bit of the latch is high then _NMI will go low
+	//		INTRQ going low also CLEARs a D flip flop such that _HALT will be forced high
+	
 
-	// assign 'current' reg_fdc_irq_drq to what was shifted to bits 31 and 30 of reg_next_fdc_irq_drq
-	vmov	reg_fdc_irq_drq,r1	// 
-	vmov	r12,reg_fdc_system	//get NMI enable of latch
-	tst	r12,#S_NMI
+	vmov	r12,reg_fdc_irq_drq_state
+	vmov	r1,reg_fdc_drq_countdown
+	lsr	r0,r12,#6	// Get the current state for DRQ (bit 6) and move it to bit 0 in prep for a BFI
+	ands	r3,r1,#0x7f	// r3 is the current count
+	subs	r3,#1		// subtract 1 from the count
+	IT	EQ
+	lsreq	r0,r1,#7	// the desired state in the countdown reg is bit 7. Move it to bit 0 in prep for the BFI
+	IT	MI
+	movmi	r3,#0		// adjust it back to 0 if it went negative
+
+	bfi	r12,r0,#6,#1	// copy bit 0 (the state we want for DRQ) to bit 6
+	bfi	r1,r3,#0,#7	// copy the new 7 count bits back into r1
+
+	vmov	reg_fdc_drq_countdown,r1
+	//vmov	reg_fdc_irq_drq_state,r12
+
+	//vmov	r12,reg_fdc_irq_drq_state
+	vmov	r1,reg_fdc_irq_countdown
+
+	lsr	r0,r12,#7	// Get the current state for DRQ (bit 7) and move it to bit 0 in prep for a BFI
+	ands	r3,r1,#0x7f	// r3 is the current count
+	subs	r3,#1		// subtract 1 from the count
+	IT	EQ
+	lsreq	r0,r1,#7	// the desired state in the countdown reg is bit 7. Move it to bit 0 in prep for the BFI
+	IT	MI
+	movmi	r3,#0		// adjust it back to 0 if it went negative
+
+	bfi	r12,r0,#7,#1	// copy bit 0 (the state we want for DRQ) to bit 7
+	bfi	r1,r3,#0,#7	// copy the new 7 count bits back into r1
+
+	vmov	reg_fdc_irq_countdown,r1
+	vmov	reg_fdc_irq_drq_state,r12
+	mov	r3,r12
+
+// huge effort here to avoid branching ... which hurts the cache
+
+	vmov	r12,reg_fdc_system	// get the latch state
+// Dragon
+.ifc \mode,dragon
+	ands	r3,#0xc0
+	tst	r12,#S_DRAGON_NMI
 	ITE	NE
-	eorne	r1,#NMI_HIGH		// if the NMI flag in the latch is high, flip the IRQ bit
-	orreq	r1,#NMI_HIGH		// if the NMI flah in the latch is low, NMI must stay high
-	str	r1,[r2,ODR]		// assume GPIOC is r2
+	eorne	r3,#NMI_HIGH	// if the NMI flag in the latch is high, flip the IRQ bit
+	orreq	r3,#NMI_HIGH	// if the NMI flag in the latch is low, NMI must stay high
+	// at this point r3 bit7 is the state we want for _NMI and bit6 is the state we want for the CART pin
+	orrs	r3,#HALT_HIGH	// Make sure _HALT is high on the Dragon
+//	tst	r12,#S_DRAGON_TANDY_MODE
 
+	str	r3,[r2,ODR]		// assume GPIOC is r2
+	vmov 	r11,reg_fake_stack		// pop r11
+	bx	lr
+.endif
+// Tandy. If we made it to here we must be in tandy mode
+.ifc \mode,tandy	
+	vmov	r3,reg_fdc_irq_drq_state
+3:	tst	r3,#WD1793_DRQ	// check the DRQ bit that will become _HALT
+	IT	NE
+	orrne	r3,#HALT_HIGH	// Move our DRQ state into bit 13 in prep to send to PC13
+	ands	r3,#(HALT_HIGH|NMI_HIGH)	// Mask so that bit 13 (DRQ) and bit 7 (INTRQ) are ready for the next steps
+	
+	// bit 7 of r1 is the desired INTRQ state
+	tst	r3,#WD1793_IRQ
+	IT	EQ
+	andeq	r12,#~S_TANDY_HALT		// force bit 7 of latch to low
+
+	tst	r12,#S_TANDY_DENSITY		// DENSITY is used to enable INTRQ in Tandy
+	ITE	NE
+	eorne	r3,#NMI_HIGH		// if the NMI flag in the latch is high, flip the IRQ bit
+	orreq	r3,#NMI_HIGH		// if the NMI flag in the latch is low, NMI must stay high
+
+	tst	r12,#S_TANDY_HALT
+	IT	EQ
+	orreq	r3,#HALT_HIGH		// 
+
+4:
+	str	r3,[r2,ODR]		// assume GPIOC is r2
+	vmov	reg_fdc_system,r12	// update latch
+
+	
 #ifdef ENABLE_FDC_INTERRUPT_CCM_LOGGING
 	movs	r0,#0x99		// special int logging
 	log_r0_r1_to_ccm_uses_r12
 #endif
-1:	vmov 	r11,reg_fake_stack		// pop r11
+1:
+#if defined(DEBUG_EXTI4_END)
+        vstr     reg_bit8_high,[r11,ODR]
+#endif
+	vmov 	r11,reg_fake_stack		// pop r11
 	bx	lr
+.endif
 .endm
 
 
 
-
-.macro clear_EXTI0_FTSR
-	vstr	reg_zero,[r3,FTSR]
-.endm
-
-.macro set_EXTI0_FTSR
-	vstr	reg_bit0_high,[r3,FTSR]
-.endm
 
 
 
@@ -152,24 +237,18 @@
 // Use the 64K CCM ram as a sort of circular buffer for debugging
 .macro log_r0_r1_to_ccm_uses_r12
         vmov    r12,reg_ccmram_log
-	//tst	r12,#0x00010000		// effectively make it stop logging when it fills the 64K CCM
-	//ITTT	EQ
-        strb  r0,[r12],#1     // store the address 08 to 0F (ie 7ff8 to 7fff)
-        strb  r1,[r12],#1     // store the byte written
-        bfc     r12,#16,#8      // Really only need to clear bit 16
+	tst	r12,#0x00010000		// effectively make it stop logging when it fills the 64K CCM
+	ITTT	EQ
+        strbeq  r0,[r12],#1     // store the address 08 to 0F (ie 7ff8 to 7fff)
+        strbeq  r1,[r12],#1     // store the byte written
+        bfceq     r12,#16,#8      // Really only need to clear bit 16
         vmov  reg_ccmram_log,r12
 .endm
 
 .section .rodata
 
 rom_base:
-// early versions of the code allowed you to embed a rom file here at compile time. I am now pulling roms from SD card
-// and copying to ram
-// be careful if you add roms and later delete them. The old ones might be still in the STM32 flash
-//.incbin "roms/ghost-attack.rom"
-//.incbin "roms/cave-hunter.rom"
-//.incbin "roms/starship-chameleon.rom"
-//.incbin "roms/dragondos-1-0.rom"
+
 
 .section ccmram
 low_64k_base:
@@ -348,6 +427,24 @@ update_fdc_track_registers:
 
 	bx	lr
 
+
+.type update_exti_exit_vector, %function
+.align 4
+.thumb_func
+update_exti_exit_vector:
+        vmov    r0,reg_fdc_system
+	// You need to add 1 to the addresses since bit 0 of the register in a bx instruction must be 0 on Cortex-M)
+        // set tandy exit as default
+        mov32   r1,#(tandy_exit_EXTI4+1)
+
+        tst     r0,#S_DRAGON_TANDY_MODE
+        beq     1$
+	// You need to add 1 to the addresses since bit 0 of the register in a bx instruction must be 0 on Cortex-M)
+        mov32   r1,#(dragon_exit_EXTI4+1)
+1$:	vmov	reg_exit_vector,r1
+	bx      lr
+
+
 .type init_fpu_regs, %function
 .align 4
 .thumb_func
@@ -358,8 +455,8 @@ init_fpu_regs:
 	movs	r0,#1
 	vmov	reg_bit0_high,r0
 
-	movs	r0,#2
-	vmov	reg_bit1_high,r0
+	//movs	r0,#2
+	//vmov	reg_bit1_high,r0
 
 	mov32	r0,GPIOC_BASE
 	vmov	reg_gpioc_base,r0
@@ -386,9 +483,6 @@ init_fpu_regs:
 	//movs	r0,#0x40
 	//vmov	reg_bit6_high,r0
 
-	movs	r0,#0
-	vmov	reg_e_counter,r0
-
 	movs	r0,#0x100
 	vmov	reg_bit8_high,r0
 
@@ -398,6 +492,12 @@ init_fpu_regs:
 	// bit31 of reg_fdc_system is used to work out if the fdc is actually active. Default is off
 	movs	r0,#0
 	vmov	reg_fdc_system,r0
+
+	// even though we are not using the fdc registers in cart mode, we need to init due to the way the unroll works
+	movs	r0,#0
+	vmov	reg_fdc_irq_drq_state,r0	
+	vmov	reg_fdc_irq_countdown,r0
+	vmov	reg_fdc_drq_countdown,r0
 
 	bx	lr
 
@@ -420,9 +520,6 @@ init_fdc:
 	movs	r0,#0
 	vmov	reg_fdc_data,r0
 
-	movs	r0,#0
-	vmov	reg_fdc_irq_drq,r0
-	vmov	reg_next_fdc_irq_drq,r0
 
 	movs	r0,#0
 	vmov	reg_fdc_command,r0
@@ -434,55 +531,71 @@ init_fdc:
 	movs	r0,#0
 	vmov	reg_track_buffer_ptr,r0
 
-	movs	r0,#0
+	// reg_fdc_system would have been set to 0 in init_fpu, and we would have updated bit 30 to the tandy/coco state
+	vmov	r0,reg_fdc_system
 	orrs	r0,#S_FDC_PRESENT
 	vmov	reg_fdc_system,r0
 
-	mov32	r0,#0x55555555		// just leave DRQ bits if masked with this
-	vmov	reg_fdc_irq_all_off_mask,r0
+	movs	r0,#1
+	vmov	reg_fdc_drq_countdown,r0
+	vmov	reg_fdc_irq_countdown,r0
+	movs	r0,#0
+	vmov	reg_fdc_irq_drq_state,r0
 
-	mov32	r0,#0xaaaaaaaa		// just leave IRQ bits if masked with this
-	vmov	reg_fdc_drq_all_off_mask,r0
+
 	bx	lr
 
 .type deactivate_fdc, %function
 .align 4
 .thumb_func
 deactivate_fdc:
-	movs	r0,#0			// set bit 31 low
+	vmov	r0,reg_fdc_system
+	bfc	r0,#31,#1			// set bit 31 low
 	vmov	reg_fdc_system,r0
 	bx	lr
 
 
 // --------------------------------------------------------
 // E Handler. Int on +ve edge. High time is roughly 550ns
-.type EXTI0_IRQHandler, %function
+.type EXTI4_IRQHandler, %function
 .align 4
 .thumb_func
-EXTI0_IRQHandler:
+EXTI4_IRQHandler:
 	vmov	reg_fake_stack,r11		// effectively s30 is our 'stack'
 	vmov	r11,reg_gpioa_base
-#ifdef DEBUG_EXTI0_START
-	vstr     reg_zero,[r11,ODR]		
+#ifdef DEBUG_EXTI4_START
+        vstr     reg_zero,[r11,ODR]
+	nop
+	nop
+        vstr     reg_bit8_high,[r11,ODR]
 #endif
-	
+
 	vmov	r2,reg_gpioc_base
 clear_pending_e_int:
 	vmov	r3,reg_exti_base		// s7 = EXTI
-	vstr	reg_bit0_high,[r3,PR]	// clear interrupt
+	movs	r0,#0x0010
+	str	r0,[r3,PR]	// clear interrupt
+
+make_sure_e_is_high:
+	ldr     r1,[r2,IDR]     // portC. 
+	tst	r1,#E_MASK
+	beq	make_sure_e_is_high
 
 e_high:
 	ldr	r0,[r2,C_TO_E_OFFSET+IDR]     // portE address bus
 	ldr     r1,[r2,IDR]     // portC. 
+	ldr	r12,[r2,C_TO_D_OFFSET+IDR]	
 
 1$:
         lsls    r3,r1,#30      // b2 (_P2)-> Carry, b1 (_CTS)-> pl/mi
 	bcc	handle_fdc	// _P2 is low
-	bmi	exit_EXTI0_not_a_cart_or_p2
+	bmi	exit_EXTI4_not_a_cart_or_p2
 
 // Handle cart
 	tst	r1,#RW_MASK
-	beq	exit_EXTI0	// no writing to cartridge
+	ITT	EQ
+	vmoveq	r3,reg_exit_vector
+	bxeq	r3		// no writing to cartridge
 
 	vmov    r3,reg_high_64k_base
 	bfc	r0,#14,#18	// ands    r0,#0x00003FFF.
@@ -490,48 +603,45 @@ e_high:
 	ldrb	r3,[r3,r0]	// get byte from rom in lower 8 bits
 	lsls	r1,r3,#8
 
-#ifdef DEBUG_EXTI0_ROM_ACCESS
+#ifdef DEBUG_EXTI4_ROM_ACCESS
 	vstr     reg_zero,[r11,ODR]		
 #endif
 	vmov	r0,reg_moder_dataout
         str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
 
-#ifdef DEBUG_EXTI0_ROM_ACCESS
+#ifdef DEBUG_EXTI4_ROM_ACCESS
         vstr     reg_bit8_high,[r11,ODR]
 #endif
-	clear_EXTI0_FTSR
+	bx	r3
 
-exit_EXTI0:
-	unrolled_exit_EXTI0
+tandy_exit_EXTI4:
+	unrolled_exit_EXTI4 tandy
+dragon_exit_EXTI4:
+	unrolled_exit_EXTI4 dragon
+exit_EXTI4:
+	unrolled_exit_EXTI4 tandy
 
-exit_EXTI0_not_a_cart_or_p2:
+exit_EXTI4_not_a_cart_or_p2:
+	vmov	r3,reg_exit_vector
 	vmov	r0,reg_fdc_system
 	tst	r0,#S_FDC_PRESENT
-	bne	1$
+	IT	NE
+	bxne	r3
 	// bit 31 of reg_fdc_system is low so, must be in ROM mode. 
 	// toggle the CART pin. This triggers the BASIC rom to think a cartridge is plugged in. Not required for Dragon DOS ROM
 	ldr	r0,[r2,ODR]
 	eor	r0,#0x0040	// PC6
 	str	r0,[r2,ODR]
-1$:	unrolled_exit_EXTI0
+1$:	bx	r3
+
 
 // Emulation of the WD279x
 handle_fdc:
@@ -545,14 +655,24 @@ handle_fdc:
 	tst	r1,#RW_MASK
 	IT	NE
 	orrne	r0,#0x20	// set bit 5 if a read
-
+	vmov	r3,reg_fdc_system		// Need to determine if we are in Dragon or Tandy mode
+	tst	r3,#S_DRAGON_TANDY_MODE
+	IT	NE
+	orrne	r0,#0x40
 // Jump table for FDC command. Note for future. tbh is not that fast. It is pretty linear time wise though.
+//  First 32 entries are Tandy write vectors for FF40-FF5F
+//  Next 32 entries are Tandy read vectors for FF40-FF5F
+//  Next 32 entries are Dragon write vectors for FF40-FF5F
+//  Next 32 entries are Dragon read vectors for FF40-FF5F
         tbh.w   [pc,r0,lsl #1]
+branchtable_fdc:
+.include "tandy_fdc_readwrite_branchtable.S"
 .include "dragon_fdc_readwrite_branchtable.S"
 
 menu_ctrl_unused_read:
 fdc_unused_read:
-        unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+        bx	r3
 
 fdc_status_read:
 #ifdef DEBUG_FDC_STATUS_READ2
@@ -563,10 +683,18 @@ fdc_status_read:
 
 // Make sure 2nd drive reports not ready
 	vmov	r0,reg_fdc_system
-	//tst	r0,#S_DRIVE
-	tst	r0,#0x01		
+	tst	r0,#S_DRAGON_TANDY_MODE
+	beq	5$
+// Dragon
+	//tst	r0,#S_DRAGON_DRIVE
+	tst	r0,#0x01
+	b	4$
+// Tandy
+5$:
+	tst	r0,#(S_TANDY_DRIVE_3|S_TANDY_DRIVE_2)
+4$:		
 	IT	NE
-	orrne	r1,#F_NOTREADY		// set drive 1 to not ready
+	orrne	r1,#F_NOTREADY		// set drive 2,3,4 to not ready
 
 	vmov	r0,reg_fdc_command	// check what the last command was
 	tst	r0,#0x80
@@ -585,41 +713,132 @@ fdc_status_read:
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
 	// reset IRQ
-	vmov	r12,reg_fdc_irq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	vmov	reg_next_fdc_irq_drq,r3
-
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
+	movs	r3,#IRQ_OFF+E_CYCLES_FOR_IMMEDIATE_CHANGE
+	vmov	reg_fdc_irq_countdown,r3
 
 #ifdef ENABLE_FDC_CCM_LOGGING
-	movs	r0,#0x18
-	lsrs	r1,#8
-	log_r0_r1_to_ccm_uses_r12
+//	movs	r0,#0x18
+//	lsrs	r1,#8
+//	log_r0_r1_to_ccm_uses_r12
 #endif
 
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
-
-	clear_EXTI0_FTSR
 
 #ifdef DEBUG_FDC_STATUS_READ
 	vstr	reg_zero,[r11,ODR]
 #endif
 
-        unrolled_exit_EXTI0
+        bx	r3
 
+fdc_data_read:
+#ifdef DEBUG_FDC_DATA_READ_START
+	vstr     reg_zero,[r11,ODR]		
+#endif
+	mov32	r0,#track_buffer
+	// offset the track_buffer by one tracks worth if we are on the other side of the disk
+	// this has to be done here to make Nitros-9 work
+	vmov	r3,reg_fdc_system
+	tst	r3,#S_SIDE
+	IT	NE
+	addne	r0,#(18*256)
+
+	vmov	r3,reg_track_buffer_ptr
+	movs	r1,#0
+
+	vmov	r12,reg_fdc_read_length
+	cmp	r12,#0
+	ITTEE	NE
+	ldrbne	r1,[r0,r3]		// get byte from the track buffer
+	movne	r12,#DRQ_ON+E_CYCLES_FROM_DRQ_TO_DRQ
+	vmoveq	r1,reg_fdc_data		// or get the data register
+	moveq	r12,#DRQ_OFF+E_CYCLES_FOR_IMMEDIATE_CHANGE	// if we are in dummy read mode we need to make sure we dont trigger a DRQ
+	vmov	reg_fdc_data,r1		// update the data register
+
+	lsls	r1,#8
+	vmov	r0,reg_moder_dataout
+        str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
+        str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
+
+
+	// reset DRQ immediately. This weirdness is because we can't queue up two transitions of DRQ
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
+
+	vmov	r0,reg_fdc_command	// check what the last command was
+	tst	r0,#0x80
+	beq	10$
+	// previous command was >=0x80 (eg. read or write sector)
+	cmp	r0,#0xd0
+	beq	10$	
+	// This is queuing up the next DRQ
+	mov	r3,r12			// Get the countdown timer setting for DRQ. Its needs to be OFF for a dummy read
+	vmov	reg_fdc_drq_countdown,r3
+10$:
+	vmov	r12,reg_fdc_read_length
+	cmp	r12,#0
+	beq	2$
+
+
+#ifdef DEBUG_FDC_DATA_READ
+        vstr    reg_zero,[r11,ODR]
+#endif
+
+	vmov	r3,reg_track_buffer_ptr
+	vmov	r12,reg_fdc_read_length
+	adds	r3,#1			// incr the track_buffer_ptr
+	subs	r12,#1			// decr the read length
+	vmov	reg_track_buffer_ptr,r3	// update the track_buffer_ptr
+	vmov	r3,reg_fdc_sector	// get current sector num
+	vmov	reg_fdc_read_length,r12
+	mov	r0,#0x0ff		// 256 byte sectors
+	tst	r12,r0		// see if bottom 8 bits are clear
+	//IT	EQ
+// must have crossed a sector boundary. Everything seems to just read one sector at a time, so leaving off
+	//addseq	r3,#1		// incr the sector number
+	vmov	reg_fdc_sector,r3
+	cmp	r12,#0
+	bne	2$
+// All data read
+	vmov	r12,reg_fdc_status
+	ands	r12,#~(F_DRQ|F_BUSY)
+	vmov	reg_fdc_status,r12
+	
+	movs	r12,#DRQ_OFF+E_CYCLES_FOR_IMMEDIATE_CHANGE
+	vmov	reg_fdc_drq_countdown,r12
+	//movs	r12,#IRQ_ON+WAIT_3_CYCLES_UNTIL_CHANGE      // This seems quite important to Nitros-9. 
+	vmov	r3,reg_fdc_system
+	tst	r3,#S_DRAGON_TANDY_MODE
+	ITE	EQ
+	moveq	r12,#IRQ_ON+TANDY_READ_E_CYCLES_FROM_LAST_BYTE_TO_IRQ  // This seems quite important to Nitros-9. 
+	movne	r12,#IRQ_ON+DRAGON_READ_E_CYCLES_FROM_LAST_BYTE_TO_IRQ  // This seems quite important to Nitros-9. 
+	vmov	reg_fdc_irq_countdown,r12
+
+
+// Put some data on the databus
+2$:
+
+
+#ifdef ENABLE_FDC_CCM_LOGGING
+	movs	r0,#0x1b
+	lsrs	r1,#8
+	log_r0_r1_to_ccm_uses_r12
+
+#endif
+
+	vmov	r3,reg_exit_vector
+        vmov	r1,reg_moder_datain
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
+        str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
+
+        bx	r3
 fdc_track_read:
 	vmov	r1,reg_fdc_track
 
@@ -636,25 +855,14 @@ fdc_track_read:
 	log_r0_r1_to_ccm_uses_r12
 #endif
 
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
 
-	clear_EXTI0_FTSR
-        unrolled_exit_EXTI0
+        bx	r3
 
 fdc_sector_read:
 	vmov	r1,reg_fdc_sector
@@ -670,130 +878,21 @@ fdc_sector_read:
 	log_r0_r1_to_ccm_uses_r12
 #endif
 
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
 
-	clear_EXTI0_FTSR
-        unrolled_exit_EXTI0
+        bx	r3
 
-fdc_data_read:
-#ifdef DEBUG_FDC_DATA_READ_START
-	vstr     reg_zero,[r11,ODR]		
-#endif
-	mov32	r0,#track_buffer
-	vmov	r3,reg_track_buffer_ptr
-	movs	r1,#0
-
-	vmov	r12,reg_fdc_read_length
-	cmp	r12,#0
-	ITE	NE
-	ldrbne	r1,[r0,r3]		// get byte from the track buffer
-	vmoveq	r1,reg_fdc_data		// or get the data register
-	vmov	reg_fdc_data,r1		// update the data register
-
-	lsls	r1,#8
-	vmov	r0,reg_moder_dataout
-        str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
-        str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
-
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	vmov	reg_next_fdc_irq_drq,r3
-
-	vmov	r12,reg_fdc_command	// check what the last command was
-	tst	r12,#0x80
-	beq	10$
-	// previous command was >=0x80 (eg. read or write sector)
-	cmp	r12,#0xd0
-	beq	10$	
-	vmov	r12,reg_next_fdc_irq_drq
-	orr	r12,#(WD1793_DRQ)
-	vmov	reg_next_fdc_irq_drq,r12
-10$:
-	vmov	r12,reg_fdc_read_length
-	cmp	r12,#0
-	beq	2$
-
-#ifdef DEBUG_FDC_DATA_READ
-        vstr    reg_zero,[r11,ODR]
-#endif
-	vmov	r3,reg_track_buffer_ptr
-	vmov	r12,reg_fdc_read_length
-	adds	r3,#1			// incr the track_buffer_ptr
-	subs	r12,#1			// decr the read length
-	vmov	reg_track_buffer_ptr,r3	// update the track_buffer_ptr
-	vmov	r3,reg_fdc_sector	// get current sector num
-	vmov	reg_fdc_read_length,r12
-	mov	r0,#0x0ff		// 256 byte sectors
-	tst	r12,r0		// see if bottom 8 bits are clear
-	IT	EQ
-// must have crossed a sector boundary. Everything seems to just read one sector at a time, so leaving off
-	addseq	r3,#1		// incr the sector number
-	vmov	reg_fdc_sector,r3
-	cmp	r12,#0
-	bne	2$
-// All data read
-	vmov	r12,reg_fdc_status
-	ands	r12,#~(F_DRQ|F_BUSY)
-	vmov	reg_fdc_status,r12
-	
-	vmov	r12,reg_next_fdc_irq_drq
-	and	r12,#~(WD1793_DRQ)		// we might have set DRQ earlier. Turn it off
-	orr	r12,#WD1793_IRQ
-	vmov	reg_next_fdc_irq_drq,r12
-
-// Put some data on the databus
-2$:
-
-
-#ifdef ENABLE_FDC_CCM_LOGGING
-	movs	r0,#0x1b
-	lsrs	r1,#8
-	log_r0_r1_to_ccm_uses_r12
-
-#endif
-
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
-        vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
-        str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
-
-	clear_EXTI0_FTSR
-
-        unrolled_exit_EXTI0
 
 
 menu_ctrl_unused_write:
 fdc_unused_write:
-        unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+        bx	r3
 
 fdc_command_write:
 	// D->IRQ=0
@@ -831,33 +930,35 @@ fdc_command_write:
 5$:
 	//clear all bits. D->R[0]=D->Track[D->Drive]? 0:F_TRACK0
 	movs	r0,#0
-	vmov	r1,reg_fdc_actual_track
-	cmp	r1, #0
+	vmov	r3,reg_fdc_actual_track
+	cmp	r3, #0
 	IT	EQ
 	moveq	r0,#F_TRACK0
 	vmov	reg_fdc_status,r0
 
 // if(V&C_IRQ) D->IRQ=WD1793_IRQ;
-6$:	vmov	r0,reg_next_fdc_irq_drq
-	tst	r3,#C_IRQ
+6$:	tst	r1,#C_IRQ
 	ITT	NE
-	orrne	r0,#WD1793_IRQ
-	vmovne	reg_next_fdc_irq_drq,r0
+	movne	r0,#IRQ_ON+E_CYCLES_FOR_IMMEDIATE_CHANGE
+	vmovne	reg_fdc_irq_countdown,r0
 
-        unrolled_exit_EXTI0
+        vmov	r3,reg_exit_vector
+	bx	r3
 
 // all commands except D0
 1$:
 	// pretty much all of them will generally reset NMI and set DRQ off
-	movs	r3,#0
-	vmov	reg_next_fdc_irq_drq,r3
+	movs	r3,#E_CYCLES_FOR_IMMEDIATE_CHANGE
+	vmov	reg_fdc_irq_countdown,r3
+	vmov	reg_fdc_drq_countdown,r3
 
 
 	vmov	r12,reg_fdc_status
 	tst	r12, #F_BUSY
 	beq	2$
 	// exit if busy
-        unrolled_exit_EXTI0
+        vmov	r3,reg_exit_vector
+	bx	r3
 2$:
 	movs	r12,#0
 	vmov	reg_fdc_status,r12	// reset status
@@ -868,30 +969,35 @@ fdc_command_write:
 .include "dragon_fdc_command_branchtable.S"
 
 fdc_command_unused:
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 fdc_command_restore:
-	ldr	r3,=main_thread_command
+	//ldr	r3,=main_thread_command
+	mov32   r3,#main_thread_command
 	mov	r1,#MAIN_THREAD_SEEK_COMMAND
         vstr    reg_zero,[r3, MAIN_STRUCT_DATA]           // write cylinder to seek to 
 	mov	reg_main_thread_command,r1
 	vmov	r12,reg_fdc_status
 	orrs	r12,#F_BUSY
 	vmov	reg_fdc_status,r12
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 
 fdc_command_seek:
 	vmov	reg_fdc_read_length,reg_zero
 	vmov	r0,reg_fdc_data		// The track num would have been loaded into 'data'
-	ldr	r3,=main_thread_command
+	//ldr	r3,=main_thread_command
+	mov32   r3,#main_thread_command
 	mov	r1,#MAIN_THREAD_SEEK_COMMAND
         str     r0,[r3, MAIN_STRUCT_DATA]           // write cylinder to seek to 
 	mov	reg_main_thread_command,r1
 	vmov	r12,reg_fdc_status
 	orrs	r12,#F_BUSY
 	vmov	reg_fdc_status,r12
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 
 fdc_command_step:
@@ -943,7 +1049,8 @@ fdc_command_step_out_and_update:
 	//tst	r12,#S_DRIVE		// r12 still has the system register
 	vmov	reg_fdc_status,r1
 
-	ldr	r3,=main_thread_command
+	mov32	r3,#main_thread_command
+	//ldr	r3,=main_thread_command
 	movs	r1,#MAIN_THREAD_SEEK_COMMAND
         str     r0,[r3, MAIN_STRUCT_DATA]           // write cylinder to seek to 
         mov	reg_main_thread_command,r1
@@ -952,24 +1059,26 @@ fdc_command_step_out_and_update:
 	orrs	r12,#F_BUSY
 	vmov	reg_fdc_status,r12
 
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 
 
 fdc_command_read_sector:
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	orr	r3,#WD1793_DRQ
-	vmov	reg_next_fdc_irq_drq,r3
+	// reset DRQ immediately
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
+	// queue up the first DRQ for the first byte
+	movs	r3,#DRQ_ON+E_CYCLES_FROM_COMMAND_TO_FIRST_DRQ
+	vmov	reg_fdc_drq_countdown,r3
 	// assume 256 byte sector
 	movs	r0,#0		// set to beginning of track
 
+	// all the code to check the disk side is removed due to Nitros-9 sending very late writes to the latch
 	vmov	r12,reg_fdc_system
-	tst	r1,#C_UPDATE_SSO
-	ITTE	NE
-	addne	r0,#(18*256)
+	tst	r1,#C_UPDATE_SSO	// The Tandy wont use this bit usually, but the Dragon will
+	ITE	NE
 	orrne 	r12,#S_SIDE
 	andeq 	r12,#~(S_SIDE)
 	vmov	reg_fdc_system,r12
@@ -998,23 +1107,25 @@ fdc_command_read_sector:
 	orrs	r0,#(F_BUSY|F_DRQ)
 	vmov	reg_fdc_status,r0
 
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 fdc_command_write_sector:
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	orr	r3,#WD1793_DRQ
-	vmov	reg_next_fdc_irq_drq,r3
+	// reset DRQ immediately
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
+	// queue up the first DRQ for the first byte
+	movs	r3,#DRQ_ON+E_CYCLES_FROM_COMMAND_TO_FIRST_DRQ
+	vmov	reg_fdc_drq_countdown,r3
 
 	// assume 256 byte sector
 	movs	r0,#0		// set to beginning of track
 
+	// all the code to check the disk side is removed due to Nitros-9 sending very late writes to the latch
 	vmov	r12,reg_fdc_system
-	tst	r1,#C_UPDATE_SSO
-	ITTE	NE
-	addne	r0,#(18*256)
+	tst	r1,#C_UPDATE_SSO	// The Tandy wont use this bit usually, but the Dragon will
+	ITE	NE
 	orrne 	r12,#S_SIDE
 	andeq 	r12,#~(S_SIDE)
 	vmov	reg_fdc_system,r12
@@ -1043,11 +1154,13 @@ fdc_command_write_sector:
 	orrs	r0,#(F_BUSY|F_DRQ)
 	vmov	reg_fdc_status,r0
 
-        unrolled_exit_EXTI0
+        vmov	r3,reg_exit_vector
+	bx	r3
 
 fdc_command_read_address:
 	
-        unrolled_exit_EXTI0
+        vmov	r3,reg_exit_vector
+	bx	r3
 
 
 // ---------------------
@@ -1065,7 +1178,12 @@ fdc_track_write:
 	IT	EQ
 	vmoveq	reg_fdc_track,r1		// upate track if not busy
 
-        unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
+
+        bx	r3
 
 fdc_sector_write:
 	ldr	r1,[r2,C_TO_D_OFFSET+IDR]	// read databus again
@@ -1080,17 +1198,25 @@ fdc_sector_write:
 	IT	EQ
 	vmoveq	reg_fdc_sector,r1
 
-        unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
+
+        bx	r3
 
 fdc_data_write:
-	ldr	r1,[r2,C_TO_D_OFFSET+IDR]	// read databus again
-	lsrs	r1,r1,#8
+	//ldr	r1,[r2,C_TO_D_OFFSET+IDR]	// read databus again
+	//lsrs	r1,r1,#8
+	lsrs	r1,r12,#8
 
-	// reset DRQ
-	vmov	r12,reg_fdc_drq_all_off_mask
-	vmov	r3,reg_next_fdc_irq_drq
-	and	r3,r12
-	vmov	reg_next_fdc_irq_drq,r3
+#ifdef ENABLE_FDC_CCM_LOGGING
+	log_r0_r1_to_ccm_uses_r12
+#endif
+	// reset DRQ immediately
+	vmov	r3,reg_fdc_irq_drq_state
+	ands	r3,#~0x40
+	vmov	reg_fdc_irq_drq_state,r3
 
 // make sure we only queue up a DRQ if we are writing sectors
 	vmov	r12,reg_fdc_command
@@ -1098,23 +1224,30 @@ fdc_data_write:
 	beq	10$
 	cmp	r12,#0xd0
 	beq	10$	
-        vmov    r12, reg_next_fdc_irq_drq
-        orr     r12,#(WD1793_DRQ)
-        vmov    reg_next_fdc_irq_drq,r12
+	movs	r12,#DRQ_ON+E_CYCLES_FROM_DRQ_TO_DRQ
+	vmov	reg_fdc_drq_countdown,r12
 10$:
 #ifdef ENABLE_FDC_CCM_LOGGING
-	log_r0_r1_to_ccm_uses_r12
+	//log_r0_r1_to_ccm_uses_r12
 #endif
 
 	vmov	reg_fdc_data,r1
 	vmov	r12,reg_fdc_write_length
 	cmp	r12,#0
 	bne	1$
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 // WRITE DATA TO SECTOR. non zero write length
 1$:
 	mov32	r0,#track_buffer
+	// offset the track_buffer by one tracks worth if we are on the other side of the disk
+	// this has to be done here to make Nitros-9 work
+	vmov	r3,reg_fdc_system
+	tst	r3,#S_SIDE
+	IT	NE
+	addne	r0,#(18*256)
+
 	vmov	r3,reg_track_buffer_ptr
 	strb	r1,[r0,r3]		// store byte in track buffer
 
@@ -1136,20 +1269,29 @@ fdc_data_write:
         ands    r12,#~(F_DRQ|F_BUSY)
         vmov    reg_fdc_status,r12
 
-        vmov    r12,reg_next_fdc_irq_drq
-	and	r12,#~(WD1793_DRQ)
-        orr     r12,#WD1793_IRQ
-        vmov    reg_next_fdc_irq_drq,r12
+	movs	r12,#DRQ_OFF+E_CYCLES_FOR_IMMEDIATE_CHANGE
+	vmov	reg_fdc_drq_countdown,r12
+
+	vmov	r3,reg_fdc_system
+	tst	r3,#S_DRAGON_TANDY_MODE
+	ITE	EQ
+	// write sector seems to need a larger delay here than read sector. not sure why
+	moveq	r12,#IRQ_ON+TANDY_WRITE_E_CYCLES_FROM_LAST_BYTE_TO_IRQ  // This seems quite important to Nitros-9. 
+	movne	r12,#IRQ_ON+DRAGON_WRITE_E_CYCLES_FROM_LAST_BYTE_TO_IRQ  // This seems quite important to Nitros-9. 
+	vmov	reg_fdc_irq_countdown,r12
 
 	mov32	r0,#FDC_WRITE_FLUSH_DEFAULT
 	ldr	r1,=fdc_write_flush_count
 	str	r0,[r1]				// trigger write after some delay
+
 2$:
-        unrolled_exit_EXTI0
+        vmov	r3,reg_exit_vector
+	bx	r3
 
 // -----------------
 
 // Update the latch.
+// Nitros-9 for whatever strange reason issues a read sector command THEN writes to the latch to switch sides
 fdc_system_write:
 	ldr	r1,[r2,C_TO_D_OFFSET+IDR]	// read databus again
 	lsrs	r1,r1,#8
@@ -1158,16 +1300,31 @@ fdc_system_write:
 #endif
 
 	vmov	r12,reg_fdc_system
-	and	r12,#~(S_NMI|S_PRECOMP|S_DENSITY|S_MOTOR|S_DRIVE)
-	and	r1,#(S_NMI|S_PRECOMP|S_DENSITY|S_MOTOR|S_DRIVE)
-	orr	r12,r1
+	tst	r12,#S_DRAGON_TANDY_MODE
+	beq	2$
+// Dragon
+	and	r12,#~(S_DRAGON_NMI|S_DRAGON_PRECOMP|S_DRAGON_DENSITY|S_DRAGON_MOTOR|S_DRAGON_DRIVE)
+	and	r1,#(S_DRAGON_NMI|S_DRAGON_PRECOMP|S_DRAGON_DENSITY|S_DRAGON_MOTOR|S_DRAGON_DRIVE)
+	b	1$
+2$:
+// Tandy	
+	
+	// clear the bottom bits 
+	and	r12,#~(S_TANDY_HALT|S_TANDY_SIDE|S_TANDY_DENSITY|S_TANDY_PRECOMP|S_TANDY_MOTOR|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2|S_TANDY_DRIVE_1)
+	and	r1,#(S_TANDY_HALT|S_TANDY_SIDE|S_TANDY_DENSITY|S_TANDY_PRECOMP|S_TANDY_MOTOR|S_TANDY_DRIVE_3|S_TANDY_DRIVE_2|S_TANDY_DRIVE_1)
+	tst	r1,#S_TANDY_SIDE
+	ITE	NE
+	orrne	r1,#S_SIDE	// set S_SIDE to one
+	andeq	r1,#~S_SIDE	// set S_SIDE to zero
+1$:	orr	r12,r1
 	vmov	reg_fdc_system,r12
 
 #ifdef ENABLE_FDC_CCM_LOGGING
 	//log_r0_r1_to_ccm_uses_r12
 #endif
 
-        unrolled_exit_EXTI0
+        vmov	r3,reg_exit_vector
+	bx	r3
 
 //---------------------
 
@@ -1182,7 +1339,8 @@ menu_ctrl_command_write:
 1$:     tst     r1,#LOAD_ROM_COMMAND_MASK
         beq     2$
         mov     reg_main_thread_command,#MAIN_THREAD_COMMAND_LOAD_ROM
-2$:	unrolled_exit_EXTI0
+2$:	vmov	r3,reg_exit_vector
+	bx	r3
 
 
 menu_ctrl_address_register_lsb_write:
@@ -1192,7 +1350,8 @@ menu_ctrl_address_register_msb_write:
 	mov32	r3,#menu_ctrl_address_register
 	ands	r0,#1
 	strb	r1,[r3,r0]
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
 menu_ctrl_data_register_write:
 	ldr	r1,[r2,C_TO_D_OFFSET+IDR]	// read databus again
@@ -1207,13 +1366,20 @@ menu_ctrl_data_register_write:
 	adds	r0,#1
 	bfc     r0,#14,#18	// same as and 0x3fff
 	str	r0,[r3]
-	unrolled_exit_EXTI0
+	vmov	r3,reg_exit_vector
+	bx	r3
 
+// return bit 7 to the 6809 as 1 if a load directory command is complete
+// return bit 6 as the status of tandy/dragon mode. 
 menu_ctrl_command_read:
 	movs	r1,#0x80
+	vmov	r0,reg_fdc_system
+	tst	r0,#S_DRAGON_TANDY_MODE
+	IT	NE
+	orrne	r1,#0x40
 	tst	reg_main_thread_command,#MAIN_COMMAND_LOAD_DIRECTORY_COMPLETE
 	beq	1$
-	movs	r1,#0	// send bit 7 low
+	bfc	r1,#7,#1	// send bit 7 low
 	movs	reg_main_thread_command,#0
 1$:	
 // get it out on the bus early
@@ -1223,25 +1389,14 @@ menu_ctrl_command_read:
         str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
 
-	clear_EXTI0_FTSR
-        unrolled_exit_EXTI0
+        bx	r3
 
 menu_ctrl_file_count_lsb_read:
 menu_ctrl_file_count_msb_read:
@@ -1256,25 +1411,14 @@ menu_ctrl_file_count_msb_read:
         str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
 
-	clear_EXTI0_FTSR
-        unrolled_exit_EXTI0
+        bx	r3
 
 menu_ctrl_data_register_read:
 	movs	r0,#0x0
@@ -1296,22 +1440,11 @@ menu_ctrl_data_register_read:
         str     r1,[r2, C_TO_D_OFFSET + ODR] // GPIOD ODR
         str     r0,[r2, C_TO_D_OFFSET + MODER]  // MODER set to outputs
 
-	vmov	r3,reg_exti_base
-	set_EXTI0_FTSR
-
-        vstr     reg_bit0_high,[r3,EMR]   // EXTI_EMR - wait for an event rather than an interrupt on PC0
-
+	vmov	r3,reg_exit_vector
         vmov	r1,reg_moder_datain
-	
-	dsb
-        sev     // set the event register
-        wfe     // clear the event register
-// So the 2nd wfe is meant to wait for the +ve edge, but if you get a spurious edge at exactly the time these instructions execute, it can slip through without waiting
-        wfe     // wait for +ve edge of _MREQ
-
-	databus_read_extra_delay
-
+20$:	ldr	r0,[r2,IDR]
+	tst	r0,#E_MASK
+	bne	20$
         str     r1,[r2, C_TO_D_OFFSET + MODER]  // MODER set to inputs
 
-	clear_EXTI0_FTSR
-        unrolled_exit_EXTI0
+       bx	r3

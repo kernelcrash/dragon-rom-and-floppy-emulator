@@ -10,6 +10,7 @@
 #include "defines.h"
 #include "stm32f4xx.h"
 #include "util.h"
+#include "timer.h"
 
 #include "stm32f4_discovery.h"
 #include "stm32f4_discovery_sdio_sd.h"
@@ -85,14 +86,15 @@ enum sysclk_freq {
     SYSCLK_168_MHZ,
     SYSCLK_200_MHZ,
     SYSCLK_240_MHZ,
+    SYSCLK_250_MHZ,
 };
  
 void rcc_set_frequency(enum sysclk_freq freq)
 {
-    int freqs[]   = {42, 84, 168, 200, 240};
+    int freqs[]   = {42, 84, 168, 200, 240, 250};
  
     /* USB freqs: 42MHz, 42Mhz, 48MHz, 50MHz, 48MHz */
-    int pll_div[] = {2, 4, 7, 10, 10}; 
+    int pll_div[] = {2, 4, 7, 10, 10, 10}; 
  
     /* PLL_VCO = (HSE_VALUE / PLL_M) * PLL_N */
     /* SYSCLK = PLL_VCO / PLL_P */
@@ -152,6 +154,10 @@ void rcc_set_frequency(enum sysclk_freq freq)
             RCC_PCLK1Config(RCC_HCLK_Div4); /* 60MHz */
             RCC_PCLK2Config(RCC_HCLK_Div2); /* 120MHz */
             break;
+        case SYSCLK_250_MHZ:
+            RCC_PCLK1Config(RCC_HCLK_Div4); 
+            RCC_PCLK2Config(RCC_HCLK_Div2);
+            break;
     }
  
     /* Update SystemCoreClock variable */
@@ -203,7 +209,25 @@ void SD_SDIO_DMA_IRQHANDLER(void)
 }
 
 //
-// _IORQ interrupt
+void config_PC0_event(void) {
+        EXTI_InitTypeDef EXTI_InitStruct;
+
+        /* Enable clock for SYSCFG */
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_SYSCFG, ENABLE);
+
+        SYSCFG_EXTILineConfig(EXTI_PortSourceGPIOC, EXTI_PinSource0);
+
+        EXTI_InitStruct.EXTI_Line = EXTI_Line0;
+        /* Enable interrupt */
+        EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+        /* Interrupt mode */
+        EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Event;
+        /* Triggers on rising and falling edge */
+        EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Falling;
+        /* Add to EXTI */
+        EXTI_Init(&EXTI_InitStruct);
+}
+
 void config_PC0_int(void) {
         EXTI_InitTypeDef EXTI_InitStruct;
         NVIC_InitTypeDef NVIC_InitStruct;
@@ -236,17 +260,49 @@ void config_PC0_int(void) {
         NVIC_Init(&NVIC_InitStruct);
 }
 
+void config_PC4_int(void) {
+        EXTI_InitTypeDef EXTI_InitStruct;
+        NVIC_InitTypeDef NVIC_InitStruct;
+
+        /* Enable clock for SYSCFG */
+        RCC_APB2PeriphClockCmd(RCC_APB2Periph_SYSCFG, ENABLE);
+
+        SYSCFG_EXTILineConfig(EXTI_PortSourceGPIOC, EXTI_PinSource4);
+
+        EXTI_InitStruct.EXTI_Line = EXTI_Line4;
+        /* Enable interrupt */
+        EXTI_InitStruct.EXTI_LineCmd = ENABLE;
+        /* Interrupt mode */
+        EXTI_InitStruct.EXTI_Mode = EXTI_Mode_Interrupt;
+        /* Triggers on rising and falling edge */
+        EXTI_InitStruct.EXTI_Trigger = EXTI_Trigger_Rising;
+        /* Add to EXTI */
+        EXTI_Init(&EXTI_InitStruct);
+
+        /* Add IRQ vector to NVIC */
+        /* PC0 is connected to EXTI_Line0, which has EXTI0_IRQn vector */
+        NVIC_InitStruct.NVIC_IRQChannel = EXTI4_IRQn;
+        /* Set priority */
+        NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = E_PREEMPTION_PRIORITY;
+        /* Set sub priority */
+        NVIC_InitStruct.NVIC_IRQChannelSubPriority = 0x00;
+        /* Enable interrupt */
+        NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;
+        /* Add to NVIC */
+        NVIC_Init(&NVIC_InitStruct);
+}
 
 /*
  * PC0(in)         - _E (p6)
    PC1(in)         - _CTS (p32) (the cartridge chip select)
    PC2(in)         - _P2 (p36)  (the $FF40-$FF5F chip select)
 
-   PC3(in)         -  R/_W (p18)
-   PC4(in)         -  future
-   PC5(out)        -  _RESET
+   PC3(in)         - R/_W (p18)
+   PC4(in)         - OnePulse early interrupt
+   PC5(out)        -  _NMI
    PC6(out)        - CART (PIA1 CB1)
-   PC7(out)        - _NMI
+
+   PC13(out)       - _HALT (only used by the Coco
 */
 void config_gpio_portc(void) {
 	GPIO_InitTypeDef  GPIO_InitStructure;
@@ -255,15 +311,16 @@ void config_gpio_portc(void) {
 
 	/* Configure GPIO Settings */
 	// Make sure to init the PS2 keyboard pins here.
-	GPIO_InitStructure.GPIO_Pin = GPIO_DRAGON_E | GPIO_DRAGON_CTS | GPIO_DRAGON_P2 | GPIO_DRAGON_RW | GPIO_DRAGON_RESET;
+	GPIO_InitStructure.GPIO_Pin = GPIO_DRAGON_E | GPIO_DRAGON_CTS | GPIO_DRAGON_P2 | GPIO_DRAGON_RW | GPIO_ONE_PULSE | GPIO_DRAGON_RESET;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
-	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-	//GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+	//GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
+	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
 	GPIO_Init(GPIOC, &GPIO_InitStructure);
 
-	GPIO_InitStructure.GPIO_Pin =   GPIO_DRAGON_NMI | GPIO_DRAGON_CART;
+	GPIOC->PUPDR |= 0x00000002;	// TODO. not sure why I am adding a pullup to _CTS ???
+	GPIO_InitStructure.GPIO_Pin =   GPIO_DRAGON_NMI | GPIO_DRAGON_CART | GPIO_TANDY_HALT;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_OD;
 	//GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
@@ -271,7 +328,7 @@ void config_gpio_portc(void) {
 	GPIO_InitStructure.GPIO_PuPd  = GPIO_PuPd_UP;
 	GPIO_Init(GPIOC, &GPIO_InitStructure);
 	// NB: Do not set CART high. It should be low.
-	GPIOC->ODR = NMI_HIGH ;
+	GPIOC->ODR = NMI_HIGH  | HALT_HIGH;
 }
 
 /* Input/Output data GPIO pins on PD{8..15}. Also PD2 is used fo MOSI on the STM32F407VET6 board I have */
@@ -338,7 +395,7 @@ void config_gpio_buttons(void) {
 
 
 	/* Configure GPIO Settings */
-	GPIO_InitStructure.GPIO_Pin = GPIO_NEXT_ITEM| GPIO_PREV_ITEM | GPIO_ROM_DISK_CONTROL;
+	GPIO_InitStructure.GPIO_Pin = GPIO_NEXT_ITEM| GPIO_PREV_ITEM | GPIO_DRAGON_TANDY_MODE_CONTROL;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
 	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
@@ -350,12 +407,41 @@ void config_gpio_buttons(void) {
 FRESULT load_disk_header(FIL *fil,char *fname, char *buffer) {
         UINT BytesRead;
         FRESULT res;
+	FSIZE_t sz;
 
         res = f_open(fil, fname, FA_READ);
+	sz = f_size(fil);
 
-        if (res == FR_OK) {
-                res = f_read(fil, buffer, SIZE_OF_VDK_DISK_HEADER, &BytesRead);
-        } 
+	if (suffix_match(fname, DSK_SUFFIX)) {
+
+		buffer[VDK_HEADER_SIZE_LSB] = 0x00; /// make it so it wont seek at all
+		buffer[VDK_HEADER_SIZE_MSB] = 0x00;
+
+		switch (sz) {
+			case DISK_40_18_256_SIZE:
+				buffer[VDK_TRACKS] = 40;
+				buffer[VDK_SIDES] = 1;
+				break;
+			case DISK_40_18_256_DOUBLE_SIDED_SIZE:
+				buffer[VDK_TRACKS] = 40;
+				buffer[VDK_SIDES] = 2;
+				break;
+			case DISK_80_18_256_DOUBLE_SIDED_SIZE:
+				buffer[VDK_TRACKS] = 80;
+				buffer[VDK_SIDES] = 2;
+				break;
+			case DISK_35_18_256_SIZE:
+				buffer[VDK_TRACKS] = 35;
+				buffer[VDK_SIDES] = 1;
+				break;
+		}
+
+	}
+	if (suffix_match(fname, VDK_SUFFIX)) {
+        	if (res == FR_OK) {
+               		res = f_read(fil, buffer, SIZE_OF_VDK_DISK_HEADER, &BytesRead);
+        	} 
+	}
 
         return res;
 }
@@ -377,6 +463,8 @@ FRESULT __attribute__((optimize("O0")))  load_track(FIL *fil, uint32_t track_num
                 for (uint32_t i=0; i< SIZEOF_ONE_DISK_TRACK; i++) {
                         track[i] = 0;
                 }
+		// fake success
+		res = FR_OK;
 	}
 
 	return res;
@@ -424,11 +512,19 @@ int __attribute__((optimize("O0")))  main(void) {
 	TCHAR full_filename[128];
 	int next_button_debounce;
 	int first_time;
+	int special_reset_mode;
 	uint32_t	button_state;
 	int32_t	file_counter;
 	uint32_t reset_counter;
 
         char *disk_header_ptr = (char *) &disk_header;
+
+	char dosrom[15];
+
+        TCHAR root_directory[15];
+        DIR dir;
+        static FILINFO fno;
+
 
 	// You have to disable lazy stacking BEFORE initialising the scratch fpu registers
 	enable_fpu_and_disable_lazy_stacking();
@@ -461,8 +557,30 @@ int __attribute__((optimize("O0")))  main(void) {
 		delay_us(2);
 	}
 
-	
+	setupOnePulse();
 
+	// Determine Tandy or Dargon mode via jumper. Do this before we turn interrupts on
+	if (GPIOA->IDR & TANDY_DRAGON_MODE_MASK) {
+		// Dragon 32 mode
+		strcpy(root_directory,"dragon");
+		strcpy(dosrom,"dragondos.rom");
+		// bit 30 of reg_fdc_system is the tandy/dragon mode bit. 1 means Dragon mode
+		__asm volatile("vmov r0,"XSTR(reg_fdc_system)"\n"
+                      "orr r0,#"XSTR(S_DRAGON_TANDY_MODE)"\n"
+		       "vmov "XSTR(reg_fdc_system)",r0\n"
+                       :::);
+	} else {
+		// Tandy Coco mode
+		strcpy(root_directory,"tandy");
+		strcpy(dosrom,"tandydos.rom");
+		// bit 30 of reg_fdc_system is the tandy/dragon mode bit. 0 means Tandy mode
+		__asm volatile("vmov r0,"XSTR(reg_fdc_system)"\n"
+                      "and r0,#~"XSTR(S_DRAGON_TANDY_MODE)"\n"
+		       "vmov "XSTR(reg_fdc_system)",r0\n"
+                       :::);
+	}
+
+	update_exti_exit_vector();
 
 	//copy_rom_to_ram((uint8_t*) &rom_base, (uint8_t*) &high_64k_base);
 
@@ -479,7 +597,8 @@ int __attribute__((optimize("O0")))  main(void) {
 
 
 
-	config_PC0_int();
+	config_PC0_event();
+	config_PC4_int();
 
         memset(&fs32, 0, sizeof(FATFS));
         res = f_mount(&fs32, "",0);
@@ -488,26 +607,11 @@ int __attribute__((optimize("O0")))  main(void) {
         }
 
 
-        TCHAR root_directory[15];
-        DIR dir;
-        static FILINFO fno;
-
-	// If the GPIO_ROM_DISK_CONTROL pin is high or disconnect then assume DISK mode. If its low assume rom mode
-	// set the base dir at startup. dragondisks if in disk mode, dragonroms if in rom mode
-	//if (GPIOA->IDR & GPIO_ROM_DISK_CONTROL) {
-	//	strcpy(root_directory,"d32disks");
-	//	init_fdc();
-	//	// This next call just 'primes' the main_thread_data so that when the first disk image is loaded it loads track 0 rather than some unknown track
-	//	copy_from_fdc_track_registers();
-	//} else {
-	//	strcpy(root_directory,"d32roms");
-	//	deactivate_fdc();
-	//}
-
-	strcpy(root_directory,"dragon");
 	init_fdc();
 	// This next call just 'primes' the main_thread_data so that when the first disk image is loaded it loads track 0 rather than some unknown track
 	copy_from_fdc_track_registers();
+
+
 
         res = f_opendir(&dir, root_directory);
         if (res != FR_OK) {
@@ -519,7 +623,7 @@ int __attribute__((optimize("O0")))  main(void) {
 	next_button_debounce=0;
 	file_counter=-1;
 
-	// attempt to load the special menu rom. See kcdfs
+	// attempt to load the special menu rom. See kcdfs. Note kcdfs will talk to the stm32f4 and ask it whether its in Tandy or Dragon mode
 	res = load_rom("menu.rom",(char *)&high_64k_base);
 	if (res == FR_OK) {
 		first_time=FALSE;
@@ -528,8 +632,29 @@ int __attribute__((optimize("O0")))  main(void) {
 	memset(&fil, 0, sizeof(FIL));
 
 
+	special_reset_mode = 0;
+
 	while(1) {
 		button_state = GPIOA->IDR;
+		
+		 /* doesnt work
+		  if (!(GPIOC->IDR & RESET_HIGH)) {
+			// _RESET is low
+			if (!(button_state & NEXT_ROM_OR_DISK_MASK) || !(button_state & PREV_ROM_OR_DISK_MASK) ) {
+				res = load_rom("menu.rom",(char *)&high_64k_base);
+				if (res == FR_OK) {
+					first_time=FALSE;
+				}
+				// This memset is actually really important
+				memset(&fil, 0, sizeof(FIL));
+				next_button_debounce=30000000;
+			}
+		}
+		*/
+		if (GPIOC->IDR & RESET_HIGH) {
+			special_reset_mode=0;
+		}
+	
 		if (!(button_state & NEXT_ROM_OR_DISK_MASK) || !(button_state & PREV_ROM_OR_DISK_MASK) || first_time) {
 			first_time = FALSE;
 			if (next_button_debounce == 0 ) {
@@ -568,14 +693,23 @@ int __attribute__((optimize("O0")))  main(void) {
 				strcpy(full_filename,root_directory);
 				strcat(full_filename,"/");
 				strcat(full_filename,fno.fname);
-				if (suffix_match(fno.fname, DSK_SUFFIX)) {
+
+				if (!(GPIOC->IDR & RESET_HIGH)) {
+					// The logic here is that if you hold down reset then press + then -, then special_reset_mode == 1025. If you press + twice you get 2048. If you press - twice you get 2
+					if (!(button_state & PREV_ROM_OR_DISK_MASK)) {
+						special_reset_mode++;
+					} else {
+						special_reset_mode+=1024;
+					}
+				}
+				if ( (special_reset_mode==0) && ((suffix_match(fno.fname, DSK_SUFFIX)) || (suffix_match(fno.fname, VDK_SUFFIX))) ) {
 					// try to close any previous dsk
 					if (fil.obj.id) {
 						f_close(&fil);
 						memset(&fil, 0, sizeof(FIL));
 					}
-					load_rom("dragondos.rom",(char *)&high_64k_base);
-					load_disk_header(&fil, full_filename, disk_header_ptr);
+					load_rom(dosrom,(char *)&high_64k_base);
+					load_disk_header(&fil, full_filename, disk_header_ptr); 
 					track_size = ( (uint32_t) disk_header_ptr[VDK_SIDES] * 18 * 256);
 					global_track_size = track_size;
 					header_length = ((uint32_t) disk_header_ptr[VDK_HEADER_SIZE_LSB]) + ((uint32_t) disk_header_ptr[VDK_HEADER_SIZE_MSB]<<8) ; 
@@ -587,14 +721,19 @@ int __attribute__((optimize("O0")))  main(void) {
 					//main_thread_command_reg = MAIN_THREAD_SEEK_COMMAND;
 					main_thread_command_reg = MAIN_THREAD_BUTTON_COMMAND;
 					__asm volatile("vmov r0,"XSTR(reg_fdc_system)"\n"
-                                               "orr r0,#0x80000000\n"
+                                               "orr r0,#"XSTR(S_FDC_PRESENT)"\n"
 					       "vmov "XSTR(reg_fdc_system)",r0\n"
                                                :::);
 				} else {
 					// assume ROM
-					load_rom(full_filename,(char *)&high_64k_base);
+					if (special_reset_mode==MAGIC_BUTTON_SUM) {
+						load_rom("menu.rom",(char *)&high_64k_base);
+						special_reset_mode=0;
+					} else {
+						load_rom(full_filename,(char *)&high_64k_base);
+					}
 					__asm volatile("vmov r0,"XSTR(reg_fdc_system)"\n"
-                                               "bfc r0,#31,#1\n"
+                                               "and r0,#~"XSTR(S_FDC_PRESENT)"\n"
 					       "vmov "XSTR(reg_fdc_system)",r0\n"
                                                :::);
 				}
@@ -611,7 +750,7 @@ int __attribute__((optimize("O0")))  main(void) {
 					main_thread_command_reg |= MAIN_COMMAND_IN_PROGRESS;
 					// Check if there is any pending write
 					if (fdc_write_flush_count) {
-                                                fdc_write_flush_count=0;
+						fdc_write_flush_count=0;
 						if (fil.obj.id) {
 							f_close(&fil);
 							memset(&fil, 0, sizeof(FIL));
@@ -638,7 +777,7 @@ int __attribute__((optimize("O0")))  main(void) {
 				}
 				case (MAIN_THREAD_COMMAND_LOAD_DIRECTORY): {
 					main_thread_command_reg |= MAIN_COMMAND_IN_PROGRESS;
-					menu_ctrl_file_count = load_directory("dragon",(unsigned char *)(CCMRAM_BASE+0x4100));
+					menu_ctrl_file_count = load_directory(root_directory,(unsigned char *)(CCMRAM_BASE+0x4100));
 					//unsigned char * p = (unsigned char *) (CCMRAM_BASE+0x4080);
 					//*p = 0x00;
 					main_thread_command_reg |= MAIN_COMMAND_LOAD_DIRECTORY_COMPLETE;
@@ -672,14 +811,14 @@ int __attribute__((optimize("O0")))  main(void) {
 					strcpy(full_filename,root_directory);
 					strcat(full_filename,"/");
 					strcat(full_filename,fno.fname);
-					if (suffix_match(fno.fname, DSK_SUFFIX)) {
+					if ( (suffix_match(fno.fname, DSK_SUFFIX)) || (suffix_match(fno.fname, VDK_SUFFIX)) ) {
 						// try to close any previous dsk
 						if (fil.obj.id) {
 							f_close(&fil);
 							memset(&fil, 0, sizeof(FIL));
 						}
-						load_rom("dragondos.rom",(char *)&high_64k_base);
-						load_disk_header(&fil, full_filename, disk_header_ptr);
+						load_rom(dosrom,(char *)&high_64k_base);
+						load_disk_header(&fil, full_filename, disk_header_ptr); 
 						track_size = ( (uint32_t) disk_header_ptr[VDK_SIDES] * 18 * 256);
 						global_track_size = track_size;
 						header_length = ((uint32_t) disk_header_ptr[VDK_HEADER_SIZE_LSB]) + ((uint32_t) disk_header_ptr[VDK_HEADER_SIZE_MSB]<<8) ; 
@@ -687,14 +826,14 @@ int __attribute__((optimize("O0")))  main(void) {
 
 						main_thread_command_reg = MAIN_THREAD_BUTTON_COMMAND;
 						__asm volatile("vmov r0,"XSTR(reg_fdc_system)"\n"
-                                                       "orr r0,#0x80000000\n"
+                                                       "orr r0,#"XSTR(S_FDC_PRESENT)"\n"
 						       "vmov "XSTR(reg_fdc_system)",r0\n"
                                                        :::);
 					} else {
 						// assume ROM
 						load_rom(full_filename,(char *)&high_64k_base);
 						__asm volatile("vmov r0,"XSTR(reg_fdc_system)"\n"
-                                                       "bfc r0,#31,#1\n"
+                                                       "and r0,#~"XSTR(S_FDC_PRESENT)"\n"
 						       "vmov "XSTR(reg_fdc_system)",r0\n"
                                                        :::);
 					}
