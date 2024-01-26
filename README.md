@@ -113,9 +113,9 @@ a directory listing of that first .vdk or .dsk file.
 Assuming you have presented a disk, if you press NEXT, then do a DIR again
 (or power off/on the Dragon) then you should get a directory listing of the 2nd
 disk you copied to the dragon directory and so on. PREV can be used to go to the
-previos disk image.
+previous disk image.
 
-It's not a bad idea to power the stm32f4 board seperately so you can power off/on
+It's not a bad idea to power the stm32f4 board separately so you can power off/on
 the dragon when necessary without resetting the stm32f4 board to its first disk 
 image (ie. make sure GND is connected from the Dragon to the stm32f4 board, but
 leave +5V disconnected). Given that you can intermix .rom and disk image files 
@@ -215,13 +215,13 @@ There is an ultra simple protocol used;
    computer. 
 
 __Summary__
-
-0xff50 - command register
-0xff51 - spare
+```
+0xff50        - command register
+0xff51        - spare
 0xff52/0xff53 - number of files returned in a directory listing. In little endian (so 0xff52 is the low byte)
 0xff54/0xff55 - address register into a directory buffer
 0xff56        - byte to read from the directory buffer OR byte to write to the directory buffer
-
+```
 
 Technical
 --------------------------
